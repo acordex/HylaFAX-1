@@ -64,6 +64,11 @@ Class1Modem::dialResponse(Status& eresult)
     do {
 	r = atResponse(rbuf, conf.dialResponseTimeout);
 	
+	// special messages from T38Modem
+	if (strncmp(rbuf, "T38: ", 5) == 0) {
+	    eresult = Status(10, &rbuf[5]);
+	    return (NOCARRIER);
+		}	
 	/*
 	 * Blacklisting is handled internally just like a NOCARRIER.
 	 * eresult is customized to let the user know the problem lies in
@@ -168,8 +173,8 @@ Class1Modem::getPrologue(Class2Params& params, bool& hasDoc, Status& eresult, u_
 	// To keep recvFrame from timing out we double our wait.
 	framerecvd = recvFrame(frame, FCF_SNDR, conf.t2Timer * 2);
     }
-
-    for (;;) {
+	int tries = 50;   // CB 1/24/11 limit tries as T.38 crash causes quick looping
+    for (;--tries >= 0;) {
 	if (gotEOT) break;
 	if (framerecvd) {
 	    /*
@@ -209,13 +214,19 @@ Class1Modem::getPrologue(Class2Params& params, bool& hasDoc, Status& eresult, u_
 		case FCF_DCN:
 		    eresult = Status(124, "COMREC error in transmit Phase B/got DCN");
 		    break;
+		case 0xD8:		// CRP with top bit on
+		case FCF_CRP: // echo'ed CRP - just ignore and listen some more
+			framerecvd = false;
+			break;
 		default:
 		    eresult = Status(125, "COMREC invalid command received/no DIS or DTC");
 		    break;
 		}
-		protoTrace(eresult.string());
-		return (send_retry);
-	    }
+		if (framerecvd) {
+			protoTrace(eresult.string());
+			return (send_retry);
+	    	}
+		}
 	}
 	/*
 	 * Wait up to T1 for a valid DIS.
@@ -396,7 +407,8 @@ Class1Modem::sendPhaseB(TIFF* tif, Class2Params& next, FaxMachineInfo& info,
 		 * a delay (period of silence), and this cannot be guaranteed
 		 * by a simple pause.  +FTS must be used.
 		 */
-		if (!atCmd(cmd == FCF_MPS ? conf.class1PPMWaitCmd : conf.class1EOPWaitCmd, AT_OK)) {
+		// CB 12/1/10 Test - lengthen to 90 ms to see if this helps send performance - not confirmed
+		if (!atCmd(/* cmd == FCF_MPS ? conf.class1PPMWaitCmd : */ conf.class1EOPWaitCmd, AT_OK)) {
 		    eresult = Status(127, "Stop and wait failure (modem on hook)");
 		    protoTrace(eresult.string());
 		    return (send_retry);
@@ -409,6 +421,7 @@ Class1Modem::sendPhaseB(TIFF* tif, Class2Params& next, FaxMachineInfo& info,
 	}
 	int ncrp = 0;
 	u_int ppr;
+	int ackRetry = 0;
 	do {
 	    if (signalRcvd == 0) {
 		/*
@@ -434,11 +447,13 @@ Class1Modem::sendPhaseB(TIFF* tif, Class2Params& next, FaxMachineInfo& info,
 	    case FCF_MCF:		// ack confirmation
 	    case FCF_PIP:		// ack, w/ operator intervention
 		countPage(cmd == PPH_SKIP ? PAGE_SKIP : pt);// bump page count
-		notifyPageSent(tif, cmd == PPH_SKIP ? PAGE_SKIP : pt);		// update server
 		if (pph[2] == 'Z')
 		    pph.remove(0,2+5+1);// discard page-chop+handling info
 		else
 		    pph.remove(0,3);	// discard page-handling info
+		// below was moved so that page-handling info is updated in Q
+		// file to correspond with page that was sent.
+		notifyPageSent(tif, cmd == PPH_SKIP ? PAGE_SKIP : pt);		// update server
 		if (params.ec == EC_DISABLE) (void) switchingPause(eresult);
 		ntrys = 0;
 		if (morePages) {	// meaning, more pages in this file, but there may be other files
@@ -481,11 +496,13 @@ Class1Modem::sendPhaseB(TIFF* tif, Class2Params& next, FaxMachineInfo& info,
 			// after retraining
 		    params.br = (u_int) -1;	// force retraining above
 		    countPage(pt);		// bump page count
-		    notifyPageSent(tif, pt);	// update server
 		    if (pph[2] == 'Z')
 			pph.remove(0,2+5+1);// discard page-chop+handling info
 		    else
 			pph.remove(0,3);	// discard page-handling info
+			// below was moved so that page-handling info is updated in Q
+			// file to correspond with page that was sent.
+		    notifyPageSent(tif, pt);	// update server
 		    ntrys = 0;
 		    if (ppr == FCF_PIP) {
 			eresult = Status(129, "Procedure interrupt (operator intervention)");
@@ -528,15 +545,42 @@ Class1Modem::sendPhaseB(TIFF* tif, Class2Params& next, FaxMachineInfo& info,
 		eresult = Status(133, "Unable to transmit page (NAK with operator intervention)");
 		protoTrace(eresult.string());
 		return (send_failed);
+	    default:			// unexpected response
+			signalRcvd = 0;
+			// if we receive an echo of our command, wait a little longer to see if we get a response
+			if (ppr == cmd) {
+				// switching pause needed as this enables another 'recvFrame' call
+				if (switchingPause(eresult) && recvFrame(frame, FCF_SNDR, 1000, false, false)) {
+					signalRcvd = frame.getFCF();
+					traceFCF("SEND rcved", ppr);
+					ppr = FCF_CRP; // so we loop below
+					break;  // avoid switching pause below
+					}
+				// assume echoed response is an ACK after two tries
+				// note we have also waited 1 second to receive, which seems to help some fax machines which
+				// do not work if turn around to send next page is too quick
+				if (!ackRetry && ncrp >= 2) {
+					signalRcvd = FCF_MCF; // imitate fax sent
+					--ncrp;
+					ackRetry = 1;
+					eresult = Status(156, "Sent - no confirmation.");
+					protoTrace(eresult.string());
+					ppr = FCF_CRP;
+					break;
+					}
+				}
+			if (ncrp >= 2) {
+				eresult = Status(134, "Fax protocol incorrect (unknown frame received)");
+				protoTrace(eresult.string());
+				return (send_retry);
+				}
+			ppr = FCF_CRP;
+			// fall through to treat as command repeat
 	    case FCF_CRP:
 		if (!useV34 && !switchingPause(eresult)) {
 		    return (send_retry);
 		}
 		break;
-	    default:			// unexpected abort
-		eresult = Status(134, "Fax protocol error (unknown frame received)");
-		protoTrace(eresult.string());
-		return (send_retry);
 	    }
 	} while (ppr == FCF_CRP && ++ncrp < 3);
 	if (ncrp == 3) {
@@ -559,6 +603,7 @@ bool
 Class1Modem::sendTCF(const Class2Params& params, u_int ms)
 {
     u_int tcfLen = params.transferSize(ms);
+
     u_char* tcf = new u_char[tcfLen];
     memset(tcf, 0, tcfLen);
     bool ok = transmitData(curcap->value, tcf, tcfLen, frameRev, true);
@@ -665,6 +710,8 @@ bool
 Class1Modem::sendTraining(Class2Params& params, int tries, Status& eresult)
 {
     bool again = false;
+    int brRetry = 2;
+    int tcfExtra = 0;
     u_short attempt = 0;
     if (tries == 0) {
 	eresult = Status(136, "DIS/DTC received 3 times; DCS not recognized");
@@ -773,12 +820,13 @@ Class1Modem::sendTraining(Class2Params& params, int tries, Status& eresult)
 		 * Class1PPMWaitCmd above.
 		 */
 		if (!atCmd(conf.class1TCFWaitCmd, AT_OK)) {
+//		if (!atCmd("AT+FTS=40", AT_OK)) {  (testing)
 		    eresult = Status(127, "Stop and wait failure (modem on hook)");
 		    protoTrace(eresult.string());
 		    return (send_retry);
 		}
-
-		if (!sendTCF(params, TCF_DURATION)) {
+		// CB 4/26/2013 - adjust slightly longer for second attempt at 9600 and 7200
+		if (!sendTCF(params, TCF_DURATION + tcfExtra)) {
 		    if (abortRequested())
 			goto done;
 		    protoTrace("Problem sending TCF data");
@@ -805,7 +853,8 @@ Class1Modem::sendTraining(Class2Params& params, int tries, Status& eresult)
 	     * FTT, or CFR; and also a premature DCN.
 	     */
 	    HDLCFrame frame(conf.class1FrameOverhead);
-	    if (recvFrame(frame, FCF_SNDR, conf.t4Timer)) {
+	     // CB 11/10/10 Timer bumped from 3.1 sec to 5 second to handle slow T.38 response, some seen in 4-5 range
+	    if (recvFrame(frame, FCF_SNDR, /*conf.t4Timer*/ 5000)) {
 		do {
 		    switch (frame.getFCF()) {
 		    case FCF_NSF:
@@ -885,7 +934,13 @@ Class1Modem::sendTraining(Class2Params& params, int tries, Status& eresult)
 	 * by the local & remote sides and try again.
 	 */
 	if (!useV34) {
-	    do {
+		tcfExtra = 0;
+		// CB 4/26/2013 double attempts at 14400 and 1200 and increase the training duration on second attempt
+		if ((params.br == BR_14400 && brRetry == 2) || (params.br == BR_12000 && brRetry == 1)) {
+			--brRetry;
+			tcfExtra = 240; // CB 4/26/2013 - adjust slightly longer for second attempt at 9600 and 7200
+			again = true;
+	    } else do {
 		/*
 		 * We don't fallback to V.17 9600 or V.17 7200 because
 		 * after V.17 14400 and V.17 12000 fail they're not likely
@@ -1959,8 +2014,20 @@ Class1Modem::sendPage(TIFF* tif, Class2Params& params, u_int pageChop, u_int ppm
 	    imagefd = 0;
 	}
     }
-    if (rc || abortRequested())
-	rc = sendRTC(params, ppmcmd, rowsperstrip, eresult);
+    // CB 10/26/10 - abort requested - just end data, do no wait for modem to output, we want to
+    // move to hang-up as quickly as possible and we do not want the other end to get a valid RTC or page
+	if (abortRequested()) {
+		u_char buf[2];
+		buf[0] = DLE; buf[1] = ETX;
+		putModem(buf, 2, 1000);
+		rc = false;
+		}
+    if (rc) {
+		rc = sendRTC(params, ppmcmd, rowsperstrip, eresult);
+		if (abortRequested()) {
+			rc = false;
+			}
+		}
     protoTrace("SEND end page");
     if (params.ec == EC_DISABLE) {
 	// these were already done by ECM protocol
@@ -1989,8 +2056,9 @@ Class1Modem::sendPage(TIFF* tif, Class2Params& params, u_int pageChop, u_int ppm
 	    setXONXOFF(FLOW_NONE, FLOW_NONE, ACT_DRAIN);
     }
     if (!rc && (eresult.value() == 0)) {
-	eresult = Status(149, "Unspecified Transmit Phase C error");	// XXX
-	protoTrace(eresult.string());
+    	if (abortRequested()) eresult = Status(352, "Send aborted due to operator intervention");	// XXX
+		else eresult = Status(149, "Unspecified Transmit Phase C error");	// XXX
+		protoTrace(eresult.string());
     }
     return (rc);
 }

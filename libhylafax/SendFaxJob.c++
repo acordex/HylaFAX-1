@@ -478,6 +478,8 @@ SendFaxJob::createJob(SendFaxClient& client, fxStr& emsg)
     IFPARM("MODEM", client.getModem(), "");	// XXX should be per-job state
     IFPARM("MAXDIALS", maxDials, (u_int) -1)
     IFPARM("MAXTRIES", maxRetries, (u_int) -1)
+    /* correct priority does no come from the command line if we don't do this */
+    priority = client.getProtoJob().priority;
     CHECKPARM("SCHEDPRI", priority)
     /*
      * If the dialstring is different from the
@@ -490,6 +492,7 @@ SendFaxJob::createJob(SendFaxClient& client, fxStr& emsg)
     IFPARM("PASSWD", passwd, "")
     CHECKPARM("NOTIFYADDR", mailbox)
     IFPARM("TOUSER", name, "")
+    company = client.getProtoJob().company;
     IFPARM("TOCOMPANY", company, "")
     IFPARM("TOLOCATION", location, "")
     IFPARM("TOVOICE", voicenumber, "")

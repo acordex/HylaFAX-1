@@ -42,6 +42,7 @@ FaxModem::FaxModem(FaxServer& s, const ModemConfig& c)
     minsp = BR_2400;
     curreq = NULL;
     group3opts = 0;
+    pageStarted = false;
     imagefd = 0;
     // fill order settings may be overwritten in derived class
     recvFillOrder = (conf.recvFillOrder != 0)? conf.recvFillOrder : FILLORDER_LSB2MSB;
@@ -728,9 +729,12 @@ FaxModem::recvStartPage(TIFF* tif)
 {
     u_char null[1];
     (void) TIFFWriteRawStrip(tif, 0, null, 0);
-    (void) TIFFGetField(tif, TIFFTAG_STRIPOFFSETS, &savedWriteOff);
-    (void) TIFFGetField(tif, TIFFTAG_STRIPBYTECOUNTS, &savedStripByteCounts);
+//    (void) TIFFGetField(tif, TIFFTAG_STRIPOFFSETS, &savedWriteOff);
+//    (void) TIFFGetField(tif, TIFFTAG_STRIPBYTECOUNTS, &savedStripByteCounts);
     pageStarted = true;
+    u_long* lp;
+    (void) TIFFGetField(tif, TIFFTAG_STRIPOFFSETS, &lp);
+    savedWriteOff = lp[0];
 }
 
 /*
@@ -746,10 +750,28 @@ FaxModem::recvStartPage(TIFF* tif)
 void
 FaxModem::recvResetPage(TIFF* tif)
 {
-    if (!pageStarted) return;
+    u_long* lp;
+    int i;
+    int current_strip;
+
+    if (!pageStarted || !savedWriteOff) return;
+	int fileno = TIFFFileno(tif);
+   	ftruncate(fileno, savedWriteOff + 1); // 1 byte overwrite so we do not have seek errors
+	current_strip = TIFFCurrentStrip(tif);
+	if (current_strip < 0) current_strip = 0;
     TIFFSetWriteOffset(tif, 0);		// force library to reset state
-    TIFFSetField(tif, TIFFTAG_STRIPOFFSETS, savedWriteOff);
-    TIFFSetField(tif, TIFFTAG_STRIPBYTECOUNTS, savedStripByteCounts);
+//    TIFFSetField(tif, TIFFTAG_STRIPOFFSETS, savedWriteOff);
+//    TIFFSetField(tif, TIFFTAG_STRIPBYTECOUNTS, savedStripByteCounts);
+    TIFFGetField(tif, TIFFTAG_STRIPOFFSETS, &lp);	
+	lp[0] = savedWriteOff;
+	
+	for (i = 1; i <= current_strip; ++i) {
+		lp[i] = 0;
+		}
+    TIFFGetField(tif, TIFFTAG_STRIPBYTECOUNTS, &lp);
+	for (i = 0; i <= current_strip; ++i) {
+		lp[i] = 0;
+		}
 }
 
 void

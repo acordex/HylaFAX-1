@@ -1376,14 +1376,14 @@ HylaFAXServer::TIMESPEC(u_int len, time_t& result)
 		    tm.tm_mday = twodigits(cp+6, 32);
 		    tm.tm_mon  = twodigits(cp+4, 13) - 1;
 		    tm.tm_year = fourdigits(cp+0) - 1900;
-		    tm.tm_isdst= -1;		// XXX not sure about this???
+		 //   tm.tm_isdst= -1;		// XXX not sure about this??? (CB 9/22/10 Commented out to match old version)
 		    /*
 		     * Client specifies time relative to GMT
 		     * and mktime returns locally adjusted
 		     * time so we need to adjust the result
 		     * here to get things in the right timezone.
 		     */
-		    result = mktime(&tm) - gmtoff;
+		    result = timegm(&tm); // - gmtoff; // use timegm, this fixes the problem CB 10/28/03
 		} else if (len == 6) {		// DDHHMM
 		    result = 24*60*60*twodigits(cp, 100)
 			   +    60*60*twodigits(cp+2, 24)

@@ -313,6 +313,16 @@ u_char* MemoryDecoder::cutExtraEOFB()
     return endOfData;
 }
 
+// CB 1/23/13 - For testing
+extern void vlogError(const char* fmt, va_list ap);
+void encoderTrace(const char* fmt ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    vlogError(fmt, ap);
+    va_end(ap);
+}
+
 u_char* MemoryDecoder::encodeTagLine(u_long* raster, u_int th, u_int slop)
 {
     /*

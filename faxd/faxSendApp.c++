@@ -105,6 +105,9 @@ faxSendApp::close()
 	     * returned to the caller.
 	     */
 	    FaxServer::abortSession(Status(352, "Send aborted due to operator intervention"));
+// Not yet, so that fax cancel does not take a long time, with T38 the connection is essentially dropped
+//	    if (FaxServer::getConnectTime() == 0) // if not connected
+	    	FaxServer::startTimeout(1000);	// CB 2/17/03 added to speed up fax abort during dialing
 	} else {
 	    FaxServer::close();
 	    faxApp::close();
@@ -230,6 +233,8 @@ faxSendApp::send(const char** filenames, int num)
 	}
 	batched = 0;            // disable BATCH_FIRST and BATCH_LAST routines
     }
+	if (streq(sendOnly, "yes"))
+		setServerStatus("Idle (not sending)");
     return (status);		// return status for exit
 }
 
@@ -276,6 +281,7 @@ faxSendApp::notifyModemReady()
 void
 faxSendApp::notifyModemWedged()
 {
+	setServerStatus("Configuration failed"); // exact message checked in ModemServer.c, don't change
     if (!sendModemStatus(getModemDeviceID(), "W"))
 	logError("MODEM %s appears to be wedged",
 	    (const char*) getModemDevice());

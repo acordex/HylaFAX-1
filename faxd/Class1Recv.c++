@@ -202,7 +202,7 @@ Class1Modem::recvIdentification(
 	     * Wait for a response to be received.  We wait T2
 	     * rather than T4 due to empirical evidence for that need.
 	     */
-	    if (recvFrame(frame, FCF_RCVR, conf.t2Timer, false, true, false)) {
+	    if (recvFrame(frame, FCF_RCVR, conf.t2Timer, false, false, false)) { // CB 1/25/11 changed do_crp to false - helps sync
 		do {
 		    /*
 		     * Verify a DCS command response and, if
@@ -962,13 +962,14 @@ Class1Modem::recvPage(TIFF* tif, u_int& ppm, Status& eresult, const fxStr& id)
 			messageReceived = (lastPPM != FCF_MPS);	// expect Phase C if MPS
 		    } else {
 			u_int rtnfcf = FCF_RTN;
-			if (!getRecvEOLCount() || conf.badPageHandling == FaxModem::BADPAGE_DCN) {
+			if (params.ec != EC_DISABLE || !getRecvEOLCount() || conf.badPageHandling == FaxModem::BADPAGE_DCN) {
 			    /*
 			     * Regardless of the BadPageHandling setting, if we get no page image data at
 			     * all, then sending RTN at all risks confirming the non-page to RTN-confused
 			     * senders, which risk is far worse than just simply hanging up.
 			     */
-			    eresult = Status(155, "PPM received with no image data.  To continue risks receipt confirmation.");
+			    if (params.ec == EC_DISABLE || eresult.value() == 0)
+			    	eresult = Status(155, "PPM received with no image data.  To continue risks receipt confirmation.");
 			    rtnfcf = FCF_DCN;
 			}
 			(void) transmitFrame(rtnfcf|FCF_RCVR);
@@ -990,7 +991,8 @@ Class1Modem::recvPage(TIFF* tif, u_int& ppm, Status& eresult, const fxStr& id)
 		if (!useV34 && !switchingPause(eresult)) return (false);
 		transmitFrame(signalSent);
 		traceFCF("RECV send", (u_char) signalSent[2]);
-		break;
+// CB 3/4/11 - fall through to clear messageReceived & signalRcvd otherwise infinite loop
+//		break;
 	    case FCF_MCF:
 	    case FCF_CFR:
 		/* It's probably just our own echo. */
@@ -1084,8 +1086,10 @@ void
 Class1Modem::abortPageECMRecv(TIFF* tif, const Class2Params& params, u_char* block, u_int fcount, u_short seq, bool pagedataseen)
 {
     if (pagedataseen) {
-	writeECMData(tif, block, (fcount * frameSize), params, (seq |= 2));
+// CB 1/5/11 only write if we are going to save
+//	writeECMData(tif, block, (fcount * frameSize), params, (seq |= 2));
 	if (conf.saveUnconfirmedPages) {
+		writeECMData(tif, block, (fcount * frameSize), params, (seq |= 2));
 	    protoTrace("RECV keeping unconfirmed page");
 	    prevPage++;
 	}
@@ -1167,7 +1171,10 @@ Class1Modem::recvPageECMData(TIFF* tif, const Class2Params& params, Status& eres
 			    } else
 				gotrtncframe = recvFrame(rtncframe, FCF_RCVR, conf.t2Timer);
 			} else {
-			    gotrtncframe = recvFrame(rtncframe, FCF_RCVR, conf.t2Timer, true);
+			    // CB - added 'false' on end to not send CRP son error, as it seems to cause failure here, because
+			    // sending CRP times out because it cannot get line control as the other end is try sending HS data for
+			    // a long time
+			    gotrtncframe = recvFrame(rtncframe, FCF_RCVR, conf.t2Timer, true, false); 
 			}
 			if (gotrtncframe) {
 			    traceFCF("RECV recv", rtncframe.getFCF());
@@ -1264,12 +1271,17 @@ Class1Modem::recvPageECMData(TIFF* tif, const Class2Params& params, Status& eres
 				    }
 				case FCF_CRP:
 				    // command repeat... just repeat whatever we last sent
+				    silenceHeard = false; // CB 3/4/11 - guarantee switching pause
 				    if (!useV34 && !switchingPause(eresult)) {
 					abortPageECMRecv(tif, params, block, fcount, seq, pagedataseen);
 					return (false);
 				    }
-				    transmitFrame(signalSent);
-				    traceFCF("RECV send", (u_char) signalSent[2]);
+				    // CB 12/10/10 - do not send back command repeat, just ignore and wait for sender to
+				    // say something more interesting 
+				    if ((u_char) signalSent[2] != 0x58) { // 58 == CRP
+				    	transmitFrame(signalSent);
+				    	traceFCF("RECV send", (u_char) signalSent[2]);
+				    	}
 				    break;
 				case FCF_DCN:
 				    eresult = Status(108, "COMREC received DCN (sender abort)");
@@ -1330,8 +1342,31 @@ Class1Modem::recvPageECMData(TIFF* tif, const Class2Params& params, Status& eres
 				    abortReceive();
 				    break;
 				}
-				if (lastResponse == AT_NOCARRIER || lastResponse == AT_ERROR ||
-				    !atCmd(rhCmd, AT_CONNECT, conf.t1Timer)) break;
+				// CB 12/13/10 attempt to resync for HS after garbled V.21 command, often this is just an
+				// echo and what we will really get is the start of HS data.
+				gotRTNC = false;
+				if (!raiseRecvCarrier(dolongtrain, eresult) && !gotRTNC) {
+					if (wasTimeout()) {
+						abortReceive();	// return to command mode
+						setTimeout(false);
+					}
+					long wait = BIT(curcap->br) & BR_ALL ? 273066 / (curcap->br+1) : conf.t2Timer;
+					if (lastResponse != AT_NOCARRIER && atCmd(rhCmd, AT_CONNECT, wait)) {	// wait longer
+						// simulate adaptive receive
+						eresult.clear();		// clear the failure
+						gotRTNC = true;
+					} else {
+						if (wasTimeout()) abortReceive();
+						eresult = Status(112, "Failed to properly detect high-speed data carrier.");
+						protoTrace(eresult.string());
+						abortPageECMRecv(tif, params, block, fcount, seq, pagedataseen);
+						return (false);
+					}
+				} else gotprimary = true;
+	// END Changes
+	// previous
+	//				if (lastResponse == AT_NOCARRIER || lastResponse == AT_ERROR ||
+	//				    !atCmd(rhCmd, AT_CONNECT, conf.t1Timer)) break;
 			    }
 			}
 		    }
@@ -1361,6 +1396,8 @@ Class1Modem::recvPageECMData(TIFF* tif, const Class2Params& params, Status& eres
 	    gotoPhaseD = false;
 	    if (!sendERR && (useV34 || syncECMFrame())) {	// no synchronization needed w/V.34-fax
 		time_t start = Sys::now();
+		// CB 3/4/11 keep track of block number of last short block received
+		int shortBlockFNum = -1;
 		do {
 		    frame.reset();
 		    if (recvECMFrame(frame)) {
@@ -1370,17 +1407,24 @@ Class1Modem::recvPageECMData(TIFF* tif, const Class2Params& params, Status& eres
 			    rcpcnt = 0;			// reset RCP counter
 			    fnum = frameRev[frame[3]];	// T.4 A.3.6.1 says LSB2MSB
 			    protoTrace("RECV received frame number %u", fnum);
-			    if (frame.checkCRC()) {
-				// store received frame in block at position fnum (A+C+FCF+Frame No.=4 bytes)
-				for (u_int i = 0; i < frameSize; i++) {
-				    if (frame.getLength() - 6 > i)	// (A+C+FCF+Frame No.+FCS=6 bytes)
-					block[fnum*frameSize+i] = frameRev[frame[i+4]];	// LSB2MSB
-				}
-				if (fcount < (fnum + 1)) fcount = fnum + 1;
-				// valid frame, set the corresponding bit in ppr to 0
-				u_int pprpos, pprval;
-				for (pprpos = 0, pprval = fnum; pprval >= 8; pprval -= 8) pprpos++;
-				if (ppr[pprpos] & frameRev[1 << pprval]) ppr[pprpos] ^= frameRev[1 << pprval];
+					// CB 3/4/11 If previous block was short, it must be bad, only the last block may be short
+			    if (shortBlockFNum >= 0) {
+			    	protoTrace("RECV frame number %u - short - marked bad", shortBlockFNum);
+					ppr[shortBlockFNum >> 3] |= frameRev[1 << (shortBlockFNum & 7)];
+					shortBlockFNum = -1;
+					}
+		    	if (frame.checkCRC()) {
+			   	 	if (frame.getLength() != frameSize+6) shortBlockFNum = fnum;
+					// store received frame in block at position fnum (A+C+FCF+Frame No.=4 bytes)
+					for (u_int i = 0; i < frameSize; i++) {
+						if (frame.getLength() - 6 > i)	// (A+C+FCF+Frame No.+FCS=6 bytes)
+						block[fnum*frameSize+i] = frameRev[frame[i+4]];	// LSB2MSB
+					}
+					if (fcount < (fnum + 1)) fcount = fnum + 1;
+					// valid frame, set the corresponding bit in ppr to 0
+					u_int pprpos, pprval;
+					for (pprpos = 0, pprval = fnum; pprval >= 8; pprval -= 8) pprpos++;
+					if (ppr[pprpos] & frameRev[1 << pprval]) ppr[pprpos] ^= frameRev[1 << pprval];
 			    } else {
 				protoTrace("RECV frame FCS check failed");
 			    }
@@ -1448,6 +1492,11 @@ Class1Modem::recvPageECMData(TIFF* tif, const Class2Params& params, Status& eres
 		    u_int br = useV34 ? primaryV34Rate : curcap->br + 1;
 		    long wait = br >= 1 && br <= 15 ? 273066 / br : conf.t2Timer;
 		    gotpps = recvFrame(ppsframe, FCF_RCVR, wait);	// wait longer
+		    // CB 3/4/11 if we get at CRP echoed to our CRP ignore and wait for something better
+		    if (gotpps && ppsframe.getFCF() == FCF_CRP && signalSent[2] == 0x58) { // 58 == CRP
+		    	gotpps = false;
+				if (!useV34) switchingPause(eresult);
+		    	}
 		} while (!gotpps && gotCONNECT && !wasTimeout() && !gotEOT && ++recvFrameCount < 5);
 		if (gotpps) {
 		    traceFCF("RECV recv", ppsframe.getFCF());
@@ -1483,6 +1532,9 @@ Class1Modem::recvPageECMData(TIFF* tif, const Class2Params& params, Status& eres
 				    else ppsframe[3] = FCF_MPS;
 				    protoTrace("RECV unexpected CRP - assume %u frames of block %u of page %u", \
 					fc, prevBlock + 1, prevPage + 1);
+					// CB 3/4/11 we need these values
+					ppsframe[5] = frameRev[prevBlock];
+					ppsframe[4] = frameRev[prevPage];
 				} else {
 				    protoTrace("RECV received %u frames of block %u of page %u", \
 					fc, frameRev[ppsframe[5]]+1, frameRev[ppsframe[4]]+1);
@@ -1852,6 +1904,8 @@ Class1Modem::recvPageData(TIFF* tif, Status& eresult)
 	    messageReceived = true;
 	    if (prevPage)
 		recvEndPage(tif, params);
+		// CB 3/4/11 added return here. its over
+		return(false);
 	}
 	TIFFSetField(tif, TIFFTAG_IMAGELENGTH, getRecvEOLCount());
 	return (true);		// no RTN with ECM
@@ -1907,12 +1961,15 @@ Class1Modem::recvEnd(Status& eresult)
 		(void) transmitFrame(FCF_MCF|FCF_RCVR);
 		traceFCF("RECV send", FCF_MCF);
 	    } else if (!wasTimeout() && lastResponse != AT_FCERROR && lastResponse != AT_FRH3) {
-		/*
-		 * Beware of unexpected responses from the modem.  If
-		 * we lose carrier, then we can loop here if we accept
-		 * null responses, or the like.
-		 */
-		break;
+	    // CB 3/4/11 - get other end a chance, otherwise we may disconnect when it hasn't heard our
+	    // last MCF, it may take a while to retransmit the EOP
+	    	if (gotEOT || (unsigned) Sys::now()-start > t1 / 3)
+				/*
+				 * Beware of unexpected responses from the modem.  If
+				 * we lose carrier, then we can loop here if we accept
+				 * null responses, or the like.
+				 */
+				break;
 	    }
 	} while ((unsigned) Sys::now()-start < t1 && (!frame.isOK() || !recvdDCN));
     }

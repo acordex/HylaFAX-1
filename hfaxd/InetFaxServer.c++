@@ -227,8 +227,8 @@ InetFaxServer::checkHostIdentity(const char*name)
 		return true;
 	    }
 	}
-	reply(130, "Warning, client address \"%s\" is not listed for host name \"%s\".",
-	    (const char*) remoteaddr, name);
+//	reply(130, "Warning, client address \"%s\" is not listed for host name \"%s\".",
+//	    (const char*) remoteaddr, name);
 	freeaddrinfo(ai);
     } else
 	reply(130, "Warning, no inverse address mapping for client host name \"%s\".",
@@ -254,7 +254,8 @@ InetFaxServer::setupNetwork(int fd)
 #if defined(IPTOS_LOWDELAY)
     { int tos = IPTOS_LOWDELAY;
       if (Socket::setsockopt(fd, IPPROTO_IP, IP_TOS, &tos, sizeof (tos)) < 0)
-          logWarning("setsockopt (IP_TOS): %m");
+      	;
+//          logWarning("setsockopt (IP_TOS): %m");
     }
 #endif
 #if defined(SO_LINGER) && !defined(__linux__)
@@ -482,7 +483,8 @@ InetFaxServer::getDataSocket(const char* mode)
 #ifdef IPTOS_THROUGHPUT
     { int on = IPTOS_THROUGHPUT;
       if (Socket::setsockopt(s, IPPROTO_IP, IP_TOS, &on, sizeof (on)) < 0)
-          logWarning("setsockopt (IP_TOS): %m");
+      //    logWarning("setsockopt (IP_TOS): %m");
+      		;
     }
 #endif
     return (fdopen(s, mode));

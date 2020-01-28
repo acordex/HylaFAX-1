@@ -30,6 +30,7 @@
 
 #include <sys/param.h>
 #include <sys/types.h>
+#include <sys/sysctl.h>
 #include <errno.h>
 #ifdef HAS_MKDEV
 extern "C" {
@@ -37,7 +38,9 @@ extern "C" {
 }
 #endif
 #include <pwd.h>
-
+#ifndef KERN_BOOTTIME
+#include <sys/sysinfo.h>
+#endif
 /*
  * UUCP Device Locking Support.
  *
@@ -202,6 +205,33 @@ UUCPLock::isNewer(time_t age)
     return (Sys::stat(file, sb) != 0 ? false : Sys::now() - sb.st_mtime < age);
 }
 
+
+bool
+UUCPLock::isNewerThanBoot()
+{
+   struct stat sb;
+#ifdef KERN_BOOTTIME
+    struct timeval uptime;
+    int     mib[2];
+    size_t len;
+
+    mib[0]=CTL_KERN;
+    mib[1]=KERN_BOOTTIME;
+    len=sizeof(uptime);
+    if (sysctl(mib,2,&uptime,&len,0,0) != 0) return(true);
+    return (Sys::stat(file, sb) != 0 ? false : uptime.tv_sec < sb.st_mtime);
+#else
+    time_t timeOfBoot;
+    struct sysinfo s_info;
+    if (sysinfo(&s_info) < 0) return(true);
+    timeOfBoot = time(NULL);
+    timeOfBoot -= s_info.uptime;
+    // see drift in uptime, if we have been booted more that a week ago, assume its OK
+    if (s_info.uptime > 7 * 24 * 60 * 60) return(true);
+    return (Sys::stat(file, sb) != 0 ? false : timeOfBoot < sb.st_mtime);
+#endif
+}
+
 /*
  * Create a lock file.  If one already exists, the create
  * time is checked for older than the age time (atime).
@@ -282,9 +312,13 @@ UUCPLock::check()
     int fd = Sys::open(file, O_RDONLY);
     if (fd != -1) {
 	if (lockTimeout > 0) {
-	    if (isNewer(lockTimeout) || ownerExists(fd)) {
-		Sys::close(fd);
-		return (false);
+		if (!isNewerThanBoot())
+	   		logInfo("UUCP lock %s older than boot time", (const char*) file);
+		else {
+	    	if (isNewer(lockTimeout) || ownerExists(fd)) {
+				Sys::close(fd);
+				return(false);
+		   	 	}
 	    }
 	    Sys::close(fd);
 	    logInfo("Purge stale UUCP lock %s", (const char*) file);

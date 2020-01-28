@@ -191,7 +191,8 @@ HylaFAXServer::checkAccess(const Job& job, Token t, u_int op)
 	return (true);
     if (IS(PRIVILEGED) && ((m>>3)&op))		// administrative access
 	return (true);
-    if (job.owner == the_user && ((m>>6)&op))	// owner access
+	//CB 12/12/03 disable this for Safekeep implementation we are not disabling changing of job parameters
+    if ((job.owner == the_user || true) && ((m>>6)&op))	// owner access
 	return (true);
 
     /*
@@ -796,7 +797,7 @@ HylaFAXServer::setJobParameter(Job& job, Token t, time_t value)
 	     */
 	    job.killtime = value + (job.tts == 0 ? now : job.tts);
 	    if (job.killtime < now) {
-		reply(503, "Bad time to send; time window is entirely in the past.");
+		reply(503, "Bad time to send; time window is entirely in the past. (killtime %d now %d)",  job.killtime, now);
 		return (false);
 	    }
 	    return (true);
@@ -891,7 +892,7 @@ HylaFAXServer::initDefaultJob(void)
     defJob.notify	= FaxRequest::no_notice;// FAX_DEFNOTIFY
     defJob.chopthreshold= 3.0;
     defJob.tts		= 0;			// ``NOW''
-    defJob.killtime	= 3*60*60;		// FAX_TIMEOUT
+    defJob.killtime	= 48*60*60;		// FAX_TIMEOUT
     defJob.retrytime	= 0;
     defJob.sender	= the_user;		// XXX usually incorrect
     defJob.mailaddr	= the_user | "@" | remotehost;
@@ -1441,6 +1442,11 @@ HylaFAXServer::operateOnJob(const char* jobid, const char* what, const char* op)
 	    reply(504, "Job %s not %sed; already done.", jobid, what);
 	    return;
 	}
+	// CB 9/27/10 -- cannot suspend active JOB, takes to long to wait for send to complete, return error
+	if (job->state == FaxRequest::state_active && op[0] == 'X') {
+	    reply(504, "Job %s call in progress, cancel first to change number", jobid);
+	    return;
+		}
 	if (sendQueuerACK(emsg, "%s%s", op, jobid))
 	    reply(200, "Job %s %sed.", jobid, what);
 	else

@@ -96,6 +96,7 @@ FaxModem::recvEndPage(TIFF* tif, const Class2Params& params)
     TIFFSetField(tif, TIFFTAG_FAXRECVTIME,
 	(uint32) server.setPageTransferTime());
 #endif
+	pageStarted = false;
 }
 
 void
@@ -132,6 +133,8 @@ FaxModem::recvPageDLEData(TIFF* tif, bool checkQuality,
 
     initializeDecoder(params);
     u_int rowpixels = params.pageWidth();	// NB: assume rowpixels <= 4864
+	u_int recvEOLMsgCount = 100;
+    recvEOLCount = 0;				// count of EOL codes
     /*
      * Data destined for the TIFF file is buffered in buf.
      * recvRow points to the next place in buf where data
@@ -151,7 +154,9 @@ FaxModem::recvPageDLEData(TIFF* tif, bool checkQuality,
 	recvTrace("%s", eresult.string());
 	return (false);
     }
-    if (checkQuality && params.ec == EC_DISABLE) {
+    // CB - 9/20/2010 check quality even during ECM, some T.38 implementationd will
+    // send bad data because CRC is part of protocol and data can be lost
+    if (checkQuality /* && params.ec == EC_DISABLE */) {
 	/*
 	 * Receive a page of data w/ copy quality checking.
 	 * Note that since we decode and re-encode we can
@@ -298,6 +303,10 @@ FaxModem::recvPageDLEData(TIFF* tif, bool checkQuality,
 		if (recvRow + rowSize > &buf[RCVBUFSIZ]) {
 		    flushEncodedData(tif, recvStrip++, buf, recvRow - buf);
 		    recvRow = buf;
+		// CB added so log file time will update during reception
+		} else if (recvEOLCount >= recvEOLMsgCount) {
+			recvEOLMsgCount += 100;
+			recvTrace("%lu lines so far, %lu bad, %lu consecutive bad", recvEOLCount, recvBadLineCount, recvConsecutiveBadLineCount);
 		}
 	    }
 	}
@@ -318,6 +327,7 @@ FaxModem::recvPageDLEData(TIFF* tif, bool checkQuality,
 		recvBadLineCount = 0;
 	    else
 		recvBadLineCount -= n;
+	    recvTrace("Terminated by RTC at %lu, lines were %lu", getRTCRow(), recvEOLCount);
 	    recvEOLCount = getRTCRow();		// adjust row count
 	} else if (lastRowBad) {
 	    /*
@@ -452,6 +462,10 @@ FaxModem::recvPageDLEData(TIFF* tif, bool checkQuality,
 		    recvRow += n;
 		}
 		recvEOLCount++;
+		if (recvEOLCount >= recvEOLMsgCount) {
+			recvEOLMsgCount += 100;
+			recvTrace("%lu lines so far", recvEOLCount);
+			}
 	    }
 	}
 	if (recvRow > &buf[0])
@@ -1097,7 +1111,9 @@ FaxModem::isQualityOK(const Class2Params& params)
 	    return (false);
 	}
     }
-    if (recvEOLCount == 0 || recvEOLCount < conf.minAcceptedLineCount) {
+    int minLines = conf.minAcceptedLineCount;
+	if (params.vr != VR_FINE) minLines >>= 1;
+    if (recvEOLCount == 0 || recvEOLCount < minLines) {
 	serverTrace("RECV: REJECT page quality, too few scanlines: %u",
 	    recvEOLCount);
 	return (false);
@@ -1131,7 +1147,9 @@ FaxModem::nextByte()
 	if (b == DLE) {
 	    switch (b = getModemDataChar()) {
 	    case EOF: raiseEOF();
-	    case ETX: raiseRTC();
+	    case ETX: 
+			recvTrace("Terminated by DLE,ETX style RTC");
+	    	raiseRTC();
 	    case DLE: break;		// <DLE><DLE> -> <DLE>
 	    default:
 		bytePending = b | 0x100;

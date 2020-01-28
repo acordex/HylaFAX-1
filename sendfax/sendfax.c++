@@ -93,7 +93,7 @@ sendFaxApp::run(int argc, char** argv)
     int verbose = 0;
     SendFaxJob& proto = getProtoJob();
     db = new FaxDB(tildeExpand(dbName));
-    while ((c = Sys::getopt(argc, argv, "a:b:B:c:C:d:f:F:h:i:I:k:M:o:O:P:r:s:S:t:T:U:V:W:x:X:y:Y:z:Z:123lmnpvwADEGNR")) != -1) {
+    while ((c = Sys::getopt(argc, argv, "a:b:B:c:C:d:f:F:h:i:I:k:M:o:O:P:r:s:S:t:T:u:U:V:W:x:X:y:Y:z:Z:123lmnpvwADEGNR")) != -1) {
         if (c != 'h')
             optionsUsed = false;
         switch (c) {
@@ -199,6 +199,9 @@ sendFaxApp::run(int argc, char** argv)
             break;
         case 'T':			// times to dial telephone
             proto.setMaxDials(atoi(optarg));
+            break;
+   		 case 'u':			// user name and password to use
+    		FaxClient::setUser(optarg);
             break;
         case 'U':			// cover page: sender's voice number
             proto.setCoverFromVoice(optarg);

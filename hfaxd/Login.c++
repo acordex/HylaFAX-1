@@ -196,7 +196,8 @@ HylaFAXServer::login(int code)
 	    , (const char*) remoteaddr
 	    , (const char*) the_user
 	);
-    (void) umask(077);
+//    (void) umask(077);
+    (void) umask(022);	// CB - Make qfiles readable
     if (tracingLevel & (TRACE_INXFERS|TRACE_OUTXFERS))
         xferfaxlog = Sys::open(xferfaxLogFile, O_WRONLY|O_APPEND|O_CREAT, 0600);
 

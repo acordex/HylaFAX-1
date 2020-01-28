@@ -169,6 +169,7 @@ private:
     fxStr	canonicalizePhoneNumber(const fxStr& ds);
 // modem support
     void	scanForModems();
+    void 	scanForSendModems();
     bool	assignModem(Job& job);
     void	releaseModem(Modem& modem);
     void	notifyModemWedged(Modem&);

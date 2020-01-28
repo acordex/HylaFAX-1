@@ -126,6 +126,20 @@ ModemServer::initialize(int argc, char** argv)
 	}
     TIFFSetErrorHandler(NULL);
     TIFFSetWarningHandler(NULL);
+    /* read the existing status file to see if the current state is modem wedged
+     * ("Configuration failed") and if so do not overwrite this state until we
+     * reach a Running state that tells us the modem is not failed, this is so
+     * a monitoring program can detect that the modem is wedged, otherwise the
+     * wedge state remains "waiting for modem to come ready" */
+    modemWedged = false;
+    statusFile = Sys::fopen(FAX_STATUSDIR "/" | modemDevID, "r");
+    if (statusFile != NULL) {
+	    char buf[25];
+	    fgets(buf, 24, statusFile);
+	    if (strncmp(buf, "Configuration failed", 20) == 0)
+	    	modemWedged = true;
+	    fclose(statusFile);
+	    }
     // setup server's status file
     statusFile = Sys::fopen(FAX_STATUSDIR "/" | modemDevID, "w");
     if (statusFile != NULL) {
@@ -134,9 +148,13 @@ ModemServer::initialize(int argc, char** argv)
 #else
 	Sys::chmod(FAX_STATUSDIR "/" | modemDevID, 0644);
 #endif
-	setServerStatus("Initializing server");
+	if (!modemWedged)
+		setServerStatus(stateStatus[BASE]);
+	/* must re-write because the open actually truncated the file */
+	else setServerStatus("Configuration failed");
     }
-    umask(077);				// keep all temp files private
+    umask(022);				// Make q files readable
+ //   umask(077);				// keep all temp files private
 
     updateConfig(configFile);		// read config file
 }
@@ -218,7 +236,16 @@ ModemServer::changeState(ModemServerState s, long timeout)
 	if (modemFd >= 0)
 	    setInputBuffering(state != RUNNING && state != SENDING &&
 		state != ANSWERING && state != RECEIVING && state != LISTENING);
-	setServerStatus(stateStatus[state]);
+	if (state == RECEIVING) {
+		char buf[70];
+		sprintf(buf, "Receiving fax, starting connection (log id %s)", (const char*) commid);
+		setServerStatus(buf);
+		}
+	/* if retry after modem wedged, don't change state until we sucessfully talk to the modem */
+	else if (!modemWedged || (state != MODEMWAIT && state != BASE)) {
+		setServerStatus(stateStatus[state]);
+		modemWedged = false;
+		}
 	switch (state) {
 	case RUNNING:
 	    notifyModemReady();			// notify surrogate
@@ -234,6 +261,7 @@ ModemServer::changeState(ModemServerState s, long timeout)
 	    "Unable to setup modem on %s; giving up after %d attempts",
 	    (const char*) modemDevice, setupAttempts);
 	notifyModemWedged();
+	modemWedged = true;
     }
     /*
      * Before we start any timer, make sure we stop the current one
@@ -556,6 +584,10 @@ ModemServer::getModemCapabilities() const
 bool
 ModemServer::openDevice(const char* dev)
 {
+	if (modemFd == -2) { // timeout on close, continual trying a bad idea
+	 	traceServer("%s: not opening due to close timeout", dev);
+	 	return(false);
+	 	}
     /*
      * Temporarily become root to open the device.
      * Routines that call setupModem *must* first
@@ -582,7 +614,8 @@ ModemServer::openDevice(const char* dev)
      * Wait a second for "slower" modems
      * such as the Nokia 6210 mobile.
      */
-    (void) sleep(1);
+// CB 9/20/10 - speed is all-important
+//    (void) sleep(1);
 
     int flags = fcntl(modemFd, F_GETFL, 0);
     if (fcntl(modemFd, F_SETFL, flags &~ O_NDELAY) < 0) {
@@ -629,9 +662,38 @@ ModemServer::openDevice(const char* dev)
 bool
 ModemServer::reopenDevice()
 {
-    if (modemFd >= 0)
-	Sys::close(modemFd), modemFd = -1;
-    return openDevice(modemDevice);
+    traceProtocol("reopen device");
+    if (modemFd >= 0) {
+    	// CB - added to prevent hanging on close
+        traceProtocol("flushing device");
+   	    startTimeout(1000);
+        tcflush(modemFd, TCIOFLUSH);
+	    stopTimeout("flushing device");
+	    
+// removed as T38 modems are not real
+//   			traceProtocol("dropping dtr");
+//   			startTimeout(3*1000);
+//	   		 (void) setDTR(false);			// force hangup
+//			stopTimeout("dropping dtr");
+
+		traceProtocol("starting TIMEOUT program");
+		startTimeout(3*1000);
+		traceProtocol("closing device");
+		Sys::close(modemFd);
+		stopTimeout("closing modem");
+		if (timeout) {
+			traceProtocol("close TIMEOUT on reopen");
+			modemFd = -2; // prevent futher attempts
+			return (false);
+			}
+    	// don't kill program this causes send fax to fail
+   		// kill(getpid(), SIGINT);
+		modemFd = -1;
+   		}
+   traceProtocol("opening device");
+   bool rval = openDevice(modemDevice);
+   traceProtocol("opened device");
+   return rval;
 }
 
 /*
@@ -641,9 +703,21 @@ void
 ModemServer::discardModem(bool dropDTR)
 {
     if (modemFd >= 0) {
+   		startTimeout(3*1000);
 	if (dropDTR)
 	    (void) setDTR(false);			// force hangup
-	Sys::close(modemFd), modemFd = -1;		// discard open file
+		if (timer.wasTimeout())
+			startTimeout(1000);
+		tcflush(modemFd, TCIOFLUSH);
+		if (timer.wasTimeout())
+			startTimeout(1000);
+		Sys::close(modemFd), modemFd = -1;		// discard open file
+		stopTimeout("closing modem");
+		if (timeout) {
+			traceProtocol("discard close TIMEOUT");
+			modemFd = -2; // prevent further attempts to open
+			}
+		else modemFd = -1;
 #ifdef sco5
 	// do it again so DTR is really off (SCO Open Server 5 wierdness)
 	modemFd = Sys::open(modemDevice, O_RDWR|O_NDELAY|O_NOCTTY);
@@ -660,6 +734,7 @@ ModemServer::discardModem(bool dropDTR)
 void
 ModemServer::beginSession(const fxStr& number)
 {
+	if (log) return;	// log already created, no need of a new one
     /*
      * Obtain the next communication identifier by reading
      * and updating the sequence number file.  If a problem
@@ -697,7 +772,10 @@ ModemServer::beginSession(const fxStr& number)
 void
 ModemServer::endSession()
 {
-    delete log, log = NULL;
+    if (log != NULL) {
+    	delete log;
+    	log = NULL;
+    	}
 }
 
 /*
@@ -1455,16 +1533,27 @@ ModemServer::getModemLine(char rbuf[], u_int bufSize, long ms)
 {
     int c;
     u_int cc = 0;
+    timeout = timer.wasTimeout();
+	if (timeout) {
+    	traceStatus(FAXTRACE_MODEMCOM, "RCV TIMEOUT on entry");
+		return(EOF);
+		}
+    if (!ms && !timer.timeoutPending()) {
+    	ms = 30 * 1000;	// prevent hang we must timeout
+    	traceStatus(FAXTRACE_MODEMCOM, "MODEM default rcv timer");
+		}
     if (ms) startTimeout(ms);
     do {
 	while ((c = getModemChar(0)) != EOF && c != '\n' && !timer.wasTimeout())
 	    if (c != '\0' && c != '\r' && cc < bufSize)
 		rbuf[cc++] = c;
-    } while (!timer.wasTimeout() && cc == 0 && c != EOF);
+    } while (cc == 0 && c != EOF && !timer.wasTimeout());
     rbuf[cc] = '\0';
     if (ms) stopTimeout("reading line from modem");
+    timeout = timer.wasTimeout();
     if (!timeout)
-	traceStatus(FAXTRACE_MODEMCOM, "--> [%d:%s]", cc, rbuf);
+		traceStatus(FAXTRACE_MODEMCOM, "--> [%d:%s]", cc, rbuf);
+	else traceStatus(FAXTRACE_MODEMCOM, "TIMEOUT: %d ms [%d:%s]", ms, cc, rbuf);
     return (cc);
 }
 
@@ -1481,9 +1570,13 @@ ModemServer::getModemChar(long ms, bool isquery)
 	    n = 5;		// only read once
 	}
 	if (ms) startTimeout(ms);
-	do
+	do {
+		if (timer.wasTimeout()) {
+			traceStatus(FAXTRACE_MODEMCOM, "TIMEOUT: %d ms (modem read)", ms);
+			return(EOF);
+			}
 	    rcvCC = Sys::read(modemFd, (char*) rcvBuf, sizeof (rcvBuf));
-	while (n++ < 5 && rcvCC == 0);
+	} while (n++ < 5 && rcvCC == 0);
 	if (ms) stopTimeout("reading from modem");
 	if (isquery) {
 	    if (fcntl(modemFd, F_SETFL, fcntl(modemFd, F_GETFL, 0) &~ O_NONBLOCK))
@@ -1491,11 +1584,13 @@ ModemServer::getModemChar(long ms, bool isquery)
 	}
 	if (rcvCC <= 0) {
 	    if (rcvCC < 0) {
-		if (errno != EINTR)
+			if (errno != EINTR) {
 		    if (!isquery || errno != EAGAIN)
-			traceStatus(FAXTRACE_MODEMCOM,
-			    "MODEM READ ERROR: errno %u", errno);
-	    }
+				traceStatus(FAXTRACE_MODEMCOM,
+			   		"MODEM READ ERROR: errno %u", errno);
+	    	}
+		   	else traceStatus(FAXTRACE_MODEMCOM, "TIMEOUT: %d ms (during modem read)", ms);
+	    } else traceStatus(FAXTRACE_MODEMCOM, "EOF: zero read");
 	    return (EOF);
 	} else
 	    traceModemIO("-->", rcvBuf, rcvCC);
@@ -1553,6 +1648,15 @@ ModemServer::modemFlushInput()
 	traceModemOp("tcflush: %m");
 }
 
+void
+ModemServer::modemFlushOutput()
+{
+    traceModemOp("flush i/o");
+    flushModemInput();
+    if (tcflush(modemFd, TCIOFLUSH) != 0)
+	traceModemOp("tcflush: %m");
+}
+
 bool
 ModemServer::modemStopOutput()
 {
@@ -1580,23 +1684,56 @@ ModemServer::putModem(const void* data, int n, long ms)
 bool
 ModemServer::putModem1(const void* data, int n, long ms)
 {
+	int cc;
+	int prevn = -1;
+	int totcc = 0;
+	
+    timeout = timer.wasTimeout();
+    // report timeout on entry as error, except in special case where timeout is
+    // 1 - we are coming from a cancel in this case and a timeout has occurred already
+    // and this is OK
+	if (timeout && ms != 1) {
+    	traceStatus(FAXTRACE_MODEMCOM, "SEND TIMEOUT on entry");
+		return(false);
+		}
+	if (!ms && !timer.timeoutPending()) {
+		ms = 30 * 1000;	// to prevent hang we must timeout
+	   	traceStatus(FAXTRACE_MODEMCOM, "MODEM default send timer");
+		}
     if (ms)
 	startTimeout(ms);
-    else
-	timeout = false;
-    int cc = Sys::write(modemFd, (const char*) data, n);
+	while (true) {
+		if (timer.wasTimeout()) {
+	   		traceStatus(FAXTRACE_MODEMCOM, "MODEM WRITE detected timeout %d ms", ms);
+			errno = EINTR;
+			cc = -1;
+			break;
+			}
+    	cc = Sys::write(modemFd, (const char*) data, n);
+    	if (cc > 0) {
+    		totcc += cc;
+    		n -= cc;
+    		}
+    	if (n == 0 || cc < 0 || timer.wasTimeout() || abortCall) 
+    		break;
+    	if (n != prevn)
+			traceStatus(FAXTRACE_MODEMCOM, "MODEM WRITE SHORT RETRY: sent %u, wrote %u",
+	   				 n, cc);
+	   	prevn = n;
+	   	n -= cc;
+    	}
     if (ms)
 	stopTimeout("writing to modem");
-    if (cc > 0) {
-	traceModemIO("<--", (const u_char*) data, cc);
-	n -= cc;
+    if (totcc > 0) {
+		traceModemIO("<--", (const u_char*) data, totcc);
     }
     if (cc == -1) {
-	if (errno != EINTR)
-	    traceStatus(FAXTRACE_MODEMCOM, "MODEM WRITE ERROR: errno %u",
-		errno);
+		if (errno != EINTR)
+	   		traceStatus(FAXTRACE_MODEMCOM, "MODEM WRITE ERROR: errno %u",
+				errno);
+	   	else traceStatus(FAXTRACE_MODEMCOM, "MODEM WRITE timeout %d ms", ms);
     } else if (n != 0)
-	traceStatus(FAXTRACE_MODEMCOM, "MODEM WRITE SHORT: sent %u, wrote %u",
-	    cc+n, cc);
+		traceStatus(FAXTRACE_MODEMCOM, "MODEM WRITE SHORT: sent %u, wrote %u",
+	    	cc+n, cc);
     return (!timeout && n == 0);
 }

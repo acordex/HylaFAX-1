@@ -570,7 +570,8 @@ HylaFAXServer::storeUniqueCmd(bool isTemp)
 	FILE* fout = fopen(filename, "w");
 	if (fout != NULL) {
 	    setFileOwner(filename);
-	    FileCache::chmod(filename, 0640);		// sync cache
+//	    FileCache::chmod(filename, 0640);		// sync cache
+	    FileCache::chmod(filename, 0666);		//  CB - Make doc files readable
 	    if (isTemp)
 		tempFiles.append(filename);
 	    time_t start_time = Sys::now();

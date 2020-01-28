@@ -267,8 +267,7 @@ public:
     void	flushModemInput();
     bool	putModem(void* data, int n, long ms = 0);
     bool	putModemData(void* data, int n);
-    bool	putModemDLEData(const u_char* data, u_int,
-		    const u_char* brev, long ms, bool doquery = false);
+    bool	putModemDLEData(const u_char* data, u_int, const u_char* brev, long ms, bool eod, bool doquery = false);
     bool	putModemLine(const char* cp, long ms = 0);
     int		getModemBit(long ms = 0);
     int		getModemChar(long ms = 0, bool doquery = false);
@@ -300,6 +299,8 @@ public:
 // server-related stuff
     bool	abortRequested();
     Status	abortReason();
+	/* CB added to check to see if modem still alive periodically */
+//	int 	waitForHeartBeat(u_int *ring, CallType& type, CallID& cinfo, fxStr& emsg);
 
     /*
      * Send support:

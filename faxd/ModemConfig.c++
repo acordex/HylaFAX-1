@@ -171,6 +171,8 @@ static struct {
 { "ringextended",		&ModemConfig::ringExtended },
 { "dringon",			&ModemConfig::dringOn  },
 { "dringoff",			&ModemConfig::dringOff  },
+{ "sendonly",			&ModemConfig::sendOnly },
+{ "modemcapabilities",	&ModemConfig::defCapabilities },
 };
 static struct {
     const char*		 name;
@@ -189,7 +191,7 @@ static struct {
 { "ringtimeout",		&ModemConfig::ringTimeout,	     6000 },
 { "percentgoodlines",		&ModemConfig::percentGoodLines,	     95 },
 { "maxconsecutivebadlines",	&ModemConfig::maxConsecutiveBadLines,5 },
-{ "minacceptedlinecount",	&ModemConfig::minAcceptedLineCount,  10 },
+{ "minacceptedlinecount",	&ModemConfig::minAcceptedLineCount,  600 }, // CB 9/20/2010 - 3 inches at 200 dpi
 { "modemresetdelay",		&ModemConfig::resetDelay,	     2600 },
 { "modemdtrdropdelay",		&ModemConfig::dtrDropDelay,	     75 },
 { "modembaudratedelay",		&ModemConfig::baudRateDelay,	     10 },
@@ -227,7 +229,7 @@ static struct {
 { "countskippedpages",		&ModemConfig::countSkippedPages,	true	},
 { "noanswervoice",		&ModemConfig::noAnswerVoice,		false	},
 { "saverawimage",		&ModemConfig::saverawimage,		false	},
-{ "saveunconfirmedpages",	&ModemConfig::saveUnconfirmedPages,	true	},
+{ "saveunconfirmedpages",	&ModemConfig::saveUnconfirmedPages,	false	},
 { "modemwaitforconnect",	&ModemConfig::waitForConnect,		false	},
 { "modemsoftrtfcc",		&ModemConfig::softRTFCC,		true	},
 { "modemdophasecdebug",		&ModemConfig::doPhaseCDebug,		false	},
@@ -300,8 +302,12 @@ ModemConfig::setupConfig()
     class1Resolutions	= VR_ALL;		// resolutions support
     setVolumeCmds("ATM0 ATL0M1 ATL1M1 ATL2M1 ATL3M1");
     recvDataFormat	= DF_ALL;		// default to no transcoding
-    rtnHandling         = FaxModem::RTN_RETRANSMITIGNORE; // retransmit until MCF/MPS
-    badPageHandling	= FaxModem::BADPAGE_RTNSAVE; // send RTN but save the page
+    // CB 11/10/10 - Change default to retransmit and quit after 3 attempts, was
+    // RTN_RETRANSMITIGNORE which would just send next page after 2 failures
+    rtnHandling = FaxModem::RTN_RETRANSMIT; // retransmit until MCF/MPS
+    // CB 11/10/10 - Change default to not save bad pages, was
+    // BADPAGE_RTNSAVE which would save garbage pages, confusing customers
+    badPageHandling	= FaxModem::BADPAGE_RTN; // send RTN do not save the page
 
     idConfig.resize(0);
     callidIndex		= (u_int) -1;
@@ -759,7 +765,8 @@ ModemConfig::setConfigItem(const char* tag, const char* value)
     else if (streq(tag, "class1jbigsupport"))
         class1JBIGSupport = getJBIGSupport(value);
     else if (streq(tag, "class1extendedres"))
-	class1Resolutions = getBoolean(value) ? VR_ALL : (VR_NORMAL | VR_FINE);
+    // CB 4/23/12 - by default only support 200 dpi resolutions
+	class1Resolutions = getBoolean(value) ? (VR_NORMAL | VR_FINE | VR_200X100 | VR_200X200) /* VR_ALL */ : (VR_NORMAL | VR_FINE);
     else if (streq(tag, "class1resolutions"))
 	class1Resolutions = getNumber(value);
     else if (streq(tag, "class1tcfrecvhack") && getBoolean(value))

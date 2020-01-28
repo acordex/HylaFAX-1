@@ -197,7 +197,7 @@ FaxServer::recvDocuments(TIFF* tif, FaxRecvInfo& info, FaxRecvInfoArray& docs, S
 	    TIFFClose(tif);
 	    return (false);
 	}
-	setServerStatus("Receiving from \"%s\"", (const char*) info.sender);
+//	setServerStatus("Receiving from \"%s\"", (const char*) info.sender);
 	recvOK = recvFaxPhaseD(tif, info, ppm, result);
 	TIFFClose(tif);
 	info.time = (u_int) getFileTransferTime();
@@ -243,6 +243,7 @@ FaxServer::recvFaxPhaseD(TIFF* tif, FaxRecvInfo& info, u_int& ppm, Status& resul
 	id.append(info.callid[i]);
     }
     do {
+	setServerStatus("Receiving from \"%s\" page %d (log id %s)", (const char*) info.sender, info.npages+1, (const char*) getCommID());
 	++recvPages;
 	if (!modem->recvPage(tif, ppm, result, id))
 	    return (false);

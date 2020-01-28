@@ -100,7 +100,7 @@ faxAlterApp::run(int argc, char** argv)
     int rc;
 
     int c;
-    while ((c = Sys::getopt(argc, argv, "Ca:d:h:k:m:n:O:P:t:Z:ADQRgprv")) != -1)
+    while ((c = Sys::getopt(argc, argv, "Ca:d:h:k:m:n:O:P:t:u:Z:ADQRgprv")) != -1)
 	switch (c) {
 	case 'C':
 	    errorexit = false;
@@ -160,6 +160,9 @@ faxAlterApp::run(int argc, char** argv)
 	case 'g':			// apply to groups, not jobs
 	    groups = true;
 	    break;
+    case 'u':			// user name and password to use
+    	FaxClient::setUser(optarg);
+    	break;
 	case 'h':			// server's host
 	    setHost(optarg);
 	    break;
@@ -318,6 +321,7 @@ faxAlterApp::usage()
 {
     fxFatal(_("usage: faxalter [-C]"
       " [-h server-host]"
+      " [-u user:password]"
       " [-a time]"
       " [-d number]"
       " [-k time]"

@@ -63,6 +63,7 @@ FaxServer::sendFax(FaxRequest& fax, FaxMachineInfo& clientInfo, FaxAcctInfo& ai,
 	    }
         }
 	fax.commid = getCommID();		// set by beginSession
+	fax.writeQFile();			// update q file to show commid
 	traceServer("SEND FAX: JOB %s DEST %s COMMID %s DEVICE '%s' FROM '%s <%s>' USER %s"
 	    , (const char*) fax.jobid
 	    , (const char*) fax.external
@@ -81,7 +82,8 @@ FaxServer::sendFax(FaxRequest& fax, FaxMachineInfo& clientInfo, FaxAcctInfo& ai,
 		getModemFd(), Dispatcher::ReadMask);
 	if (handler)
 	    Dispatcher::instance().unlink(getModemFd());
-	setServerStatus("Sending job " | fax.jobid);
+//	setServerStatus("Sending job " | fax.jobid);
+	setServerStatus("Sending job " | fax.jobid | " to " | fax.external | " (Dialing) (Log Id " | fax.commid | ")");
 	/*
 	 * Construct the phone number to dial by applying the
 	 * dialing rules to the user-specified dialing string.
@@ -311,6 +313,7 @@ FaxServer::sendFax(FaxRequest& fax, FaxMachineInfo& clientInfo, const fxStr& num
 		    sendPoll(fax, remoteHasDoc);
 	    }
 	}
+	// CB 9/20/2010 - !abortCall ?
 	if ((batched & BATCH_LAST) || (fax.status != send_done))
 	    modem->sendEnd();
 	if (fax.status != send_done) {
@@ -382,7 +385,10 @@ FaxServer::sendFax(FaxRequest& fax, FaxMachineInfo& clientInfo, const fxStr& num
 	 * precluding the complete reception of the last-sent
 	 * audio.
 	 */
-	sleep(1);
+//	sleep(1);
+// cb 10/4/10 improve T38 performance by accelerating this
+// was 1 second, reduced to .7 second, .5 sec very close, .1 sec to quick hangs up before DCN sent
+	usleep(700000);  // .7 second
 	modem->hangup();
     }
     /*
@@ -462,6 +468,12 @@ FaxServer::sendFaxPhaseB(FaxRequest& fax, FaxItem& freq, FaxMachineInfo& clientI
 	     * more than 3 times--to avoid looping.
 	     */
 	    u_int prevPages = fax.npages;
+	    curFReq = &freq;
+	    
+	    char pageTempBuf[30];
+	    sprintf(pageTempBuf, " (page 1 of %d)", fax.totpages);
+	    setServerStatus("Sending job " | fax.jobid | " to " | fax.external | (const char *)pageTempBuf | " (Log Id " | fax.commid | ")");
+
 	    fax.status = modem->sendPhaseB(tif, clientParams, clientInfo,
 		fax.pagehandling, fax.result, batched, coverpage ? FaxModem::PAGE_COVER : FaxModem::PAGE_NORMAL);
 	    if (fax.status == send_v17fail && fax.result.value() == 0) {
@@ -480,7 +492,9 @@ FaxServer::sendFaxPhaseB(FaxRequest& fax, FaxItem& freq, FaxMachineInfo& clientI
 		    fax.status = send_failed;
 		}
 	    } else {
-		freq.dirnum += fax.npages - prevPages;
+// CB - handled in page notify so that TIFF directory number changes with page number so that if we crash the
+// request file is properly updated for resuming the fax. 
+//		freq.dirnum += fax.npages - prevPages;
 		fax.ntries = 0;
 	    }
 	}
@@ -532,6 +546,9 @@ FaxServer::sendClientCapabilitiesOK(FaxRequest& fax, FaxMachineInfo& clientInfo,
      * Use optional Error Correction Mode (ECM) if the
      * peer implements and our modem is also capable.
      */
+    traceProtocol("REMOTE does ECM %s", (const char *)((clientCapabilities.ec != EC_DISABLE) ? "yes" : "no"));
+    traceProtocol("Modem does ECM %s", (const char *)((modem->supportsECM()) ? "yes" : "no"));
+    traceProtocol("FaxQ wants ECM %s", (const char *)((fax.desiredec) ? "yes" : "no"));
     if ((clientCapabilities.ec != EC_DISABLE) && modem->supportsECM() && fax.desiredec) {
 	// Technically, if the remote reports either type of T.30-A ECM, then they
 	// must therefore support the other (so we could pick), but we should follow
@@ -599,7 +616,7 @@ FaxServer::sendSetupParams1(TIFF* tif,
     }
 
     // XXX perhaps should verify samples and bits/sample???
-    uint32 g3opts;
+    uint32 g3opts = 0;
     if (!TIFFGetField(tif, TIFFTAG_GROUP3OPTIONS, &g3opts))
 	g3opts = 0;
     /*
@@ -891,6 +908,7 @@ FaxServer::notifyPageSent(FaxRequest& req, const char*, PageType pt)
 {
     time_t now = Sys::now();
     req.npages++;			// count transmitted page
+    curFReq->dirnum++;			// change TIFF directory position
     switch (pt) {
 	case FaxModem::PAGE_SKIP:
 	    req.nskip++; break;
@@ -917,6 +935,12 @@ FaxServer::notifyPageSent(FaxRequest& req, const char*, PageType pt)
 	    , req.npages, req.totpages, req.nskip, req.skippages
 	    , fmtTime(now - pageStart)
 	);
+    char pageTempBuf[30];
+    if (req.npages < req.totpages)
+    	sprintf(pageTempBuf, " (page %d of %d)", req.npages+1, req.totpages);
+   	else sprintf(pageTempBuf, " (completing)");
+    setServerStatus("Sending job " | req.jobid | " to " | req.external | (const char *)pageTempBuf | " (Log Id " | req.commid | ")");
+
     pageStart = now;			// for next page
 }
 
@@ -954,5 +978,7 @@ FaxServer::notifyDocumentSent(FaxRequest& req, u_int fi)
     if (freq.op == FaxRequest::send_fax)
 	req.renameSaved(fi);
     req.items.remove(fi);
+//    if (strlen(req.result.string()) == 0)
+//		req.result = Status(0, "Sent successfully");
     req.writeQFile();
 }

@@ -194,6 +194,12 @@ bool
 FaxClient::setupUserIdentity(fxStr& emsg)
 {
     struct passwd* pwd = NULL;
+    // CB 9/20/10 Add feature to set user name from command line
+    if (aliasName.length()) {
+    	userName = aliasName;
+    	senderName = aliasName;
+    	return(true);
+    	}
     const char* name = getenv("FAXUSER");
     if (name)
 	pwd = getpwnam(name);
@@ -342,12 +348,19 @@ FaxClient::callServer(fxStr& emsg)
 	 * Transport code is expected to call back through
 	 * setCtrlFds so fdIn should be properly setup...
 	 */
-	if (fdIn == NULL)
-	    return (false);
+	// CB 9/20/10 add better error messaging here and below
+	if (fdIn == NULL) {
+		emsg = "Can't connect to server";
+		return(false);
+		}
 	int rep = PRELIM;
 	for (int i = 0; rep == PRELIM && i < 100; i++)
 	    rep = getReply(false);
-	return (rep == COMPLETE);
+	if (rep != COMPLETE) {
+		unexpectedResponse(emsg);
+		return(false);
+		}
+	return (true);
     } else
 	return (false);
 }
@@ -428,12 +441,30 @@ FaxClient::login(const char* user, fxStr& emsg)
     }
 }
 
+// CB 9/20/10 Added method to set user
+void
+FaxClient::setUser(char *user)
+{
+	if (strlen(user) == 0) return;
+	aliasName = user;
+	int colonpos = aliasName.next(0,':');
+	if (colonpos == aliasName.length()-1)
+		password = "";
+	else {
+		password = aliasName;
+		password.remove(0, colonpos + 1);
+		aliasName.resize(colonpos);
+		}
+}
+
 /*
  * Prompt for a password.
  */
 const char*
 FaxClient::getPasswd(const char* prompt)
 {
+	// CB 9/20/10 feature to pass in password with command line
+	if (password.length()) return password;
     return (getpass(prompt));
 }
 
@@ -865,18 +896,22 @@ FaxClient::jobParm(const char* name, const fxStr& value)
      * We need to quote any " marks in the string before
      * we pass it on to the raw jobParm(... const char*)
      */
-    if (value.next(0,'"'))
-    {
+//    if (value.next(0,'"'))
+//    {
 	fxStr tmp(value);
 	int r = tmp.length();
 	while (r > 0)
 	{
-	    if ( (r = tmp.nextR(r-1, '"') ) > 0 )
-		tmp.insert('\\', r-1);
+		--r;
+		if (tmp[r] == '"' || tmp[r] == '\\')
+			tmp.insert('\\', r);
+			
+//	    if ( (r = tmp.nextR(r-1, '"') ) > 0 )
+//		tmp.insert('\\', r-1);
 	}
 	return jobParm(name, (const char*)tmp);
-    }
-    return jobParm(name, (const char*) value);
+//    }
+//    return jobParm(name, (const char*) value);
 }
 
 bool

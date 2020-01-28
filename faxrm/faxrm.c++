@@ -59,7 +59,7 @@ faxRmApp::run(int argc, char** argv)
     bool docs = false;
     bool useadmin = false;
 
-    while ((c = Sys::getopt(argc, argv, "ah:dO:v")) != -1)
+    while ((c = Sys::getopt(argc, argv, "ah:u:dO:v")) != -1)
 	switch (c) {
 	case 'a':
 	    useadmin = true;
@@ -71,6 +71,9 @@ faxRmApp::run(int argc, char** argv)
 	case 'h':			// server's host
 	    setHost(optarg);
 	    break;
+	case 'u':			// user name and password to use
+    	FaxClient::setUser(optarg);
+    	break;
 	case 'O':
 	    readConfigItem(optarg);
 	    break;
@@ -137,7 +140,7 @@ faxRmApp::deleteDoc(const char* id)
 void
 faxRmApp::usage()
 {
-    fxFatal(_("usage: faxrm [-h server-host] [-adv] id..."));
+    fxFatal(_("usage: faxrm [-h server-host] [-u user:password] [-adv] id..."));
 }
 
 int

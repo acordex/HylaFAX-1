@@ -60,10 +60,11 @@ faxStatApp::run(int argc, char** argv)
     readConfig(FAX_USERCONF);
 
     fxStrArray dirs;
+    
     dirs.append(FAX_STATUSDIR);		// server status
     bool checkInfo = false;
     int c;
-    while ((c = Sys::getopt(argc, argv, "h:adgfilO:rsv")) != -1)
+    while ((c = Sys::getopt(argc, argv, "h:j:u:adgfilO:rsv")) != -1)
 	switch (c) {
 	case 'a':			// display archived jobs
 	    dirs.append(FAX_ARCHDIR);
@@ -98,8 +99,14 @@ faxStatApp::run(int argc, char** argv)
 	case 'v':			// enable protocol tracing
 	    setVerbose(true);
 	    break;
+	case 'u':			// user name and password to use
+    	FaxClient::setUser(optarg);
+	    break;
+	case 'j':			// override default job format string
+		setJobStatusFormat(optarg);
+		break;
 	case '?':
-	    fxFatal(_("usage: faxstat [-h server-host] [-adfgilrsv]"));
+	    fxFatal(_("usage: faxstat [-h server-host] [-u user:passwd] [-j jobfmt] [-adfgilrsv]"));
 	}
     fxStr emsg;
     if (callServer(emsg)) {

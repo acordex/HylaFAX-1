@@ -82,8 +82,9 @@ private:
     tstrip_t	recvStrip;	// current strip number during receive
     u_char*	recvRow;	// current receive row raster
     u_char*	recvPageStart;	// pointer to start of page buffer
-    tiff_offset_t*	savedWriteOff;	// file offset at start of page data
-    tiff_bytecount_t*	savedStripByteCounts;	// byte counts at start of page data
+//    tiff_offset_t*	savedWriteOff;	// file offset at start of page data
+//    tiff_bytecount_t*	savedStripByteCounts;	// byte counts at start of page data (Acordex removed)
+    tiff_offset_t	savedWriteOff;	// file offset at start of page data (Acordex added)
     int		decodedPixels;	// number of pixels decoded with error
     int		decoderFd[2];	// file descriptors for the decoder pipe
     int		counterFd[2];	// file descriptors for the counter pipe

@@ -136,8 +136,9 @@ InetTransport::callServer(fxStr& emsg)
 #if defined(IP_TOS) && defined(IPTOS_LOWDELAY)
 	    int tos = IPTOS_LOWDELAY;
 	    if (Socket::setsockopt(fd, IPPROTO_IP, IP_TOS, &tos, sizeof (tos)) < 0)
-		client.printWarning(NLS::TEXT("setsockopt(TOS): %s (ignored)"),
-		    strerror(errno));
+	    	;
+	//	client.printWarning(NLS::TEXT("setsockopt(TOS): %s (ignored)"),
+	//	    strerror(errno));
 #endif
 #ifdef SO_OOBINLINE
 	    int on = 1;
@@ -386,7 +387,8 @@ InetTransport::openDataConn(fxStr& emsg)
 #if defined(IP_TOS) && defined(IPTOS_THROUGHPUT)
 	int tos = IPTOS_THROUGHPUT;
 	if (Socket::setsockopt(s, IPPROTO_IP, IP_TOS, &tos, sizeof (tos)) < 0)
-	    client.printWarning("setsockopt(IP_TOS): %s", strerror(errno));
+		;
+//	    client.printWarning("setsockopt(IP_TOS): %s", strerror(errno));
 #endif
 	return (true);
     } else {

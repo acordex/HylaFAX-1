@@ -1113,7 +1113,8 @@ SNPPServer::pagerCmd(const char* pagerID, const char* pin)
     if (newJob(emsg) && updateJobOnDisk(*curJob, emsg)) {
 	fxStr file("/" | curJob->qfile);
 	setFileOwner(file);			// force ownership
-	FileCache::chmod(file, 0660);		// sync cache
+	FileCache::chmod(file, 0666);		// make q file readable sync cache
+//	FileCache::chmod(file, 0660);		// sync cache
 	curJob->lastmod = Sys::now();		// noone else should update
 
 	curJob->number = provider;		// destination phone number

@@ -50,6 +50,12 @@
 #include "MemoryDecoder.h"
 #include "FaxSendInfo.h"
 #include "config.h"
+#include "FaxConfig.h"
+#include "ModemConfig.h"
+
+int parseCapabilities(const char* cp, u_int* caps);
+int vparseRange(const char* cp, int nargs, ... );
+
 
 /*
  * HylaFAX Spooling and Command Agent.
@@ -160,6 +166,7 @@ faxQueueApp::open()
     faxApp::open();
     scanQueueDirectory();
     Modem::broadcast("HELLO");		// announce queuer presence
+    scanForSendModems();
     scanClientDirectory();		// announce queuer presence
     pokeScheduler();
 }
@@ -193,6 +200,54 @@ faxQueueApp::scanForModems()
 		devid.remove(0);			// strip "."
 		(void) Modem::getModemByID(devid);	// adds to list
 	    }
+	}
+    }
+    closedir(dir);
+}
+
+class QConfig: public ModemConfig {
+protected:
+    void configError(const char* fmt, ...);
+    void configTrace(const char* fmt, ...);
+};
+
+void QConfig::configError(const char*fmt, ...) {}
+void QConfig::configTrace(const char*fmt, ...) {}
+
+void
+faxQueueApp::scanForSendModems()
+{
+   DIR* dir = Sys::opendir(".");
+    if (dir == NULL) {
+	logError("Could not scan directory for modems");
+	return;
+    }
+    fxStr fifoMatch(fifoName | ".");
+    for (dirent* dp = readdir(dir); dp; dp = readdir(dir)) {
+	if (dp->d_name[0] != fifoName[0])
+	    continue;
+	if (!strneq(dp->d_name, fifoMatch, fifoMatch.length()))
+	    continue;
+	if (Sys::isFIFOFile(dp->d_name)) {
+	    fxStr devid(dp->d_name);
+	    devid.remove(0, fifoMatch.length()-1);	// NB: leave "."
+	    if (Sys::isRegularFile(FAX_CONFIG | devid)) {
+		devid.remove(0);			// strip "."
+		fxStr configFile = fxStr::format(FAX_CONFIG "." | devid);
+		QConfig qconfig;
+		qconfig.updateConfig(configFile);	// read config file
+		if (qconfig.sendOnly == "yes") {
+			u_int caps = 0;
+			if (qconfig.defCapabilities.length() == 0)
+				parseCapabilities("(0,1),(0-5),(0-2),(0-2),(0),(0),(0),(0-7)", &caps);
+			else parseCapabilities(qconfig.defCapabilities, &caps);
+			char capsBuf[20];
+			sprintf(capsBuf, "RP%08x", caps);
+			const char *capsStr = qconfig.defCapabilities;
+			logError("Enabling modem %s caps %s", dp->d_name, capsStr);
+			FIFOModemMessage(devid, capsBuf);
+			}
+		}
 	}
     }
     closedir(dir);
@@ -511,6 +566,7 @@ faxQueueApp::prepareDone(Batch& batch, int status)
 		(const char*) job.jobid);
 	    setDead(job);
 	} else if (status == Job::requeued) {
+	 	job.remove();			// CB 9/21/10 believe this needs to be done - Remove from active queue
 	    delayJob(job, *req, Status(340, "Cannot fork to prepare job for transmission"),
 		    Sys::now() + random() % requeueInterval);
 	    delete req;
@@ -721,6 +777,9 @@ faxQueueApp::prepareJob(Job& job, FaxRequest& req,
      * o the remote side is known to be capable of it, and
      * o the user hasn't specified a desire to send 1D data.
      */
+	traceQueue("2D Descision: req.desired %d config allow %d modem %d called before %d dest supports %d",
+		req.desireddf, use2D, job.modem->supports2D(), info.getCalledBefore(), info.getSupports2DEncoding());
+     
     int jcdf = job.getJCI().getDesiredDF();
     if (jcdf != -1) req.desireddf = jcdf;
     if (req.desireddf == DF_2DMMR && (req.desiredec != EC_DISABLE) && 
@@ -934,6 +993,16 @@ faxQueueApp::preparePageHandling(Job& job, FaxRequest& req,
 	     *
 	     * '#' is used temporarily when the right flag is unknown
 	     */
+	    /* CB Added 2/20/2013 - if only difference is compression, treat as same, faxsend will convert compression
+	     * on the fly as needed, and we do not need to send EOM which will split cover page */
+	     /* assume 200x200 res is same as 196x196 (FINE) */
+    	if (params.df != next.df &&
+    		(params.df == DF_2DMMR || params.df == DF_2DMR || params.df == DF_1DMH) &&
+    		(next.df == DF_2DMMR || next.df == DF_2DMR || next.df == DF_1DMH))
+    		params.df = next.df;
+    	if (params.vr !=  next.vr && (params.vr == VR_FINE || params.vr == VR_200X200) &&
+    		(next.vr == VR_FINE || next.vr == VR_200X200))
+    		params.vr = next.vr;
 	    char c = next == params ? 'S' : 'M';
 	    if (skiplast) {	// skip previous page
 		req.skippages++;
@@ -1013,9 +1082,12 @@ faxQueueApp::setupParams(TIFF* tif, Class2Params& params, const FaxMachineInfo& 
     if (TIFFGetField(tif, TIFFTAG_YRESOLUTION, &yres) && TIFFGetField(tif, TIFFTAG_XRESOLUTION, &xres)) {
 	uint16 resunit;
 	TIFFGetFieldDefaulted(tif, TIFFTAG_RESOLUTIONUNIT, &resunit);
-	if (resunit == RESUNIT_CENTIMETER)
+	if (resunit == RESUNIT_CENTIMETER) {
 	    yres *= 25.4;
 	    xres *= 25.4;
+	    }
+	traceQueue("File xres: %d yres %d",
+		(u_int) xres, (u_int) yres);
 	params.setRes((u_int) xres, (u_int) yres);
     } else {
 	/*
@@ -1025,6 +1097,7 @@ faxQueueApp::setupParams(TIFF* tif, Class2Params& params, const FaxMachineInfo& 
 	uint32 l;
 	TIFFGetField(tif, TIFFTAG_IMAGELENGTH, &l);
 	// B4 at 98 lpi is ~1400 lines
+	traceQueue("File no res: length %d", l);
 	params.setRes(204, (l < 1450 ? 98 : 196));
     }
 
@@ -1060,7 +1133,7 @@ faxQueueApp::preparePageChop(const FaxRequest& req,
 	dec.scanPageForBlanks(fillorder, params);
 
 	float threshold = req.chopthreshold;
-	if (threshold == -1)
+	if (threshold == -1 || threshold == 3.0)
 	    threshold = pageChopThreshold;
 	u_int minRows = 0;
 	switch(params.vr) {
@@ -1081,6 +1154,7 @@ faxQueueApp::preparePageChop(const FaxRequest& req,
 		minRows = (u_int) (391. * threshold);
 		break;
 	}
+	traceQueue("PAGE CHOP:  %d min %d", dec.getLastBlanks(), minRows);
 	if (dec.getLastBlanks() > minRows)
 	{
 	    pagehandling.append(fxStr::format("Z%04x",
@@ -1120,7 +1194,8 @@ faxQueueApp::convertDocument(Job& job,
      * before the shared lock but that would slow down the normal
      * case and the window is small--so let's leave it there for now.
      */
-    int fd = Sys::open(outFile, O_RDWR|O_CREAT|O_EXCL, 0600);
+//    int fd = Sys::open(outFile, O_RDWR|O_CREAT|O_EXCL, 0600);
+    int fd = Sys::open(outFile, O_RDWR|O_CREAT|O_EXCL, 0666);		// allow access to fax TIFF files
     if (fd == -1) {
 	if (errno == EEXIST) {
 	    /*
@@ -1195,6 +1270,9 @@ faxQueueApp::convertDocument(Job& job,
 	// XXX the (char* const*) is a hack to force type compatibility
 	status = runConverter(job, argv[0], (char* const*) argv, result);
 	if (status == Job::done) {
+		mode_t omask = umask(0); // CB - allow read and write to all users
+		Sys::chmod(outFile, 0666);
+		umask(omask);
 	    /*
 	     * Many converters exit with zero status even when
 	     * there are problems so scan the the generated TIFF
@@ -2317,7 +2395,7 @@ faxQueueApp::terminateJob(const fxStr& jobid, JobStatus why)
 	Trigger::post(Trigger::JOB_KILL, *job);
 	FaxRequest* req = readRequest(*job);
 	if (req) {
-	    req->result = Status(345, "Job aborted by request");
+	    req->result = Status(345, "cancelled by user");
 	    deleteRequest(*job, req, why, why != Job::removed);
 	}
 	setDead(*job);
@@ -3897,3 +3975,138 @@ main(int argc, char** argv)
     
     return 0;
 }
+
+const char OPAREN = '(';
+const char CPAREN = ')';
+const char COMMA = ',';
+const char SPACE = ' ';
+
+/*
+ * Parse a Class 2 parameter range string.  This is very
+ * forgiving because modem vendors do not exactly follow
+ * the syntax specified in the "standard".  Try looking
+ * at some of the responses given by rev ~4.04 of the
+ * ZyXEL firmware (for example)!
+ *
+ * NB: We accept alphanumeric items but don't return them
+ *     in the parsed range so that modems like the ZyXEL 2864
+ *     that indicate they support ``Class Z'' are handled.
+ */
+int
+vparseRange(const char* cp, int nargs, ... )
+{
+    int b = 1;
+    va_list ap;
+    va_start(ap, nargs);
+    while (nargs-- > 0) {
+	char matchc;
+	int acceptList;
+	int mask;
+
+	while (cp[0] == SPACE)
+	    cp++;
+	if (cp[0] == OPAREN) {				/* (<items>) */
+	    matchc = CPAREN;
+	    acceptList = 1;
+	    cp++;
+	} else if (isalnum(cp[0])) {			/* <item> */
+	    matchc = COMMA;
+	    acceptList = (nargs == 0);
+	} else {					/* skip to comma */
+	    b = 0;
+	    break;
+	}
+	mask = 0;
+	while (cp[0] && cp[0] != matchc) {
+	    int v;
+	    int r;
+
+	    if (cp[0] == SPACE) {			/* ignore white space */
+		cp++;
+		continue;
+	    }
+	    if (!isalnum(cp[0])) {
+		b = 0;
+		goto done;
+	    }
+	    if (isdigit(cp[0])) {
+		v = 0;
+		do {
+		    v = v*10 + (cp[0] - '0');
+		} while (isdigit((++cp)[0]));
+	    } else {
+		v = -1;					/* XXX skip item below */
+		while (isalnum((++cp)[0]))
+		    ;
+	    }
+	    r = v;
+	    if (cp[0] == '-') {				/* <low>-<high> */
+		cp++;
+		if (!isdigit(cp[0])) {
+		    b = 0;
+		    goto done;
+		}
+		r = 0;
+		do {
+		    r = r*10 + (cp[0] - '0');
+		} while (isdigit((++cp)[0]));
+	    } else if (cp[0] == '.') {			/* <d.b> */
+		cp++;
+		while (isdigit(cp[0]))			/* XXX */
+		    cp++;
+		v++, r++;				/* XXX 2.0 -> 3 */
+	    }
+	    if (v != -1) {				/* expand range or list */
+		for (; v <= r; v++)
+		    mask |= 1<<v;
+	    }
+	    if (acceptList && cp[0] == COMMA)		/* (<item>,<item>...) */
+		cp++;
+	}
+	*va_arg(ap, int*) = mask;
+	if (cp[0] == matchc)
+	    cp++;
+	if (matchc == CPAREN && cp[0] == COMMA)
+	    cp++;
+    }
+done:
+    va_end(ap);
+    return (b);
+}
+
+/*
+ * Class 2 Fax Modem Definitions.
+ */
+#define	BIT(i)	(1<<(i))
+#define	VR_ALL	(BIT(2)-1)
+#define	BR_ALL	(BIT(6)-1)
+#define	WD_ALL	(BIT(5)-1)
+#define	LN_ALL	(BIT(3)-1)
+#define	DF_ALL	(BIT(4)-1)
+#define	EC_ALL	(BIT(2)-1)
+#define	BF_ALL	(BIT(2)-1)
+#define	ST_ALL	(BIT(8)-1)
+
+/*
+ * Parse a Class 2 parameter specification and
+ * return a string with the encoded information.
+ */
+int
+parseCapabilities(const char* cp, u_int* caps)
+{
+    int vr, br, wd, ln, df, ec, bf, st;
+    if (vparseRange(cp, 8, &vr,&br,&wd,&ln,&df,&ec,&bf,&st)) {
+	*caps = (vr&VR_ALL)
+	     | ((br&BR_ALL)<<2)
+	     | ((wd&WD_ALL)<<8)
+	     | ((ln&LN_ALL)<<13)
+	     | ((df&DF_ALL)<<16)
+	     | ((ec&EC_ALL)<<18)
+	     | ((bf&BF_ALL)<<20)
+	     | ((st&ST_ALL)<<22)
+	     ;
+	return (1);
+    } else
+	return (0);
+}
+#undef	BIT

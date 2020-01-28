@@ -29,6 +29,8 @@
 #include "Timeout.h"
 
 bool Timeout::timerExpired = false;
+bool Timeout::timerPending = false;
+
 
 Timeout::Timeout() {}
 Timeout::~Timeout() {}
@@ -38,6 +40,7 @@ void
 Timeout::sigAlarm(int)
 {
     Timeout::timerExpired = true;
+    Timeout::timerPending = false;
 }
 
 #ifndef SA_INTERRUPT
@@ -48,6 +51,7 @@ void
 Timeout::startTimeout(long ms)
 {
     timerExpired = false;
+    timerPending = true;
 #ifdef SA_NOCLDSTOP			/* POSIX */
     static struct sigaction sa;
     sa.sa_handler = fxSIGACTIONHANDLER(Timeout::sigAlarm);
@@ -87,5 +91,6 @@ Timeout::stopTimeout()
 #else
     (void) alarm(0);
 #endif
+    timerPending = false;
     traceTimer("STOP timeout%s", timerExpired ? ", timer expired" : "");
 }

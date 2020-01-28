@@ -454,7 +454,7 @@ main(int argc, char** argv)
 	switch (iter.option()) {
 	case 'a': app.setArchiving(true); break;
 	case 'A': app.setForceArchiving(true); break;
-	case 'j': app.setJobAge(optarg); break;
+	case 'j': app.setJobAge(optarg);  app.setDocAge(optarg); break;
 	case 'd': app.setDocAge(optarg); break;
 	case 'n': app.setNoWork(true); break;
 	case 'q': queueDir = iter.optArg(); break;

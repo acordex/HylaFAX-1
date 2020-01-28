@@ -115,7 +115,7 @@ parseAtSyntax(const char* s, const struct tm& ref, struct tm& at0, fxStr& emsg)
 	    }
 	}
 	cp = whitespace(cp);
-	if (streq(cp, "am", 2)) {
+	if (streq(cp, "am", 2) || streq(cp, "AM", 2)) {
 	    if (v >= HALFDAY+HOUR) {
 		_atError(emsg, NLS::TEXT("%u:%02u is not an AM value"), v/HOUR, v%HOUR);
 		return (false);
@@ -123,7 +123,7 @@ parseAtSyntax(const char* s, const struct tm& ref, struct tm& at0, fxStr& emsg)
 	    if (HALFDAY <= v && v < HALFDAY+HOUR)
 		v -= HALFDAY;
 	    cp += 2;
-	} else if (streq(cp, "pm", 2)) {
+	} else if (streq(cp, "pm", 2) || streq(cp, "PM", 2)) {
 	    if (v >= HALFDAY+HOUR) {
 		_atError(emsg, NLS::TEXT("%u:%02u is not a PM value"), v/HOUR, v%HOUR);
 		return (false);

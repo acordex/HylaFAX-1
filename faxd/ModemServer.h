@@ -88,6 +88,7 @@ private:
     bool	sawBlockEnd;		// whether DLE+ETX has been seen
     bool	inputBuffered;		// whether or not modem input is buffered
     u_char	rcvBuf[1024];		// receive buffering
+	bool	modemWedged;		// true if modem wedged
 
     friend class ClassModem;
 
@@ -165,6 +166,7 @@ protected:
     CallType	modemAnswerCall(AnswerType, Status& eresult, const char* dialnumber = NULL);
     void	modemAnswerCallCmd(CallType);
     void	modemFlushInput();
+    void	modemFlushOutput();
     void	modemHangup();
 // server state and related control interfaces
     void	changeState(ModemServerState, long timeout = 0);

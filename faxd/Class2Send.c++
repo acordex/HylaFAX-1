@@ -312,11 +312,13 @@ Class2Modem::sendPhaseB(TIFF* tif, Class2Params& next, FaxMachineInfo& info,
 		case PPR_RTP:		// page good, retrain requested
                 ignore:
 		    countPage(ppm == PPH_SKIP ? PAGE_SKIP : pt);	// bump page count
-		    notifyPageSent(tif, ppm == PPH_SKIP ? PAGE_SKIP : pt);// update server
 		    if (pph[2] == 'Z')
 			pph.remove(0,2+5+1);	// discard page-chop+handling
 		    else
 			pph.remove(0,3);	// discard page-handling info
+			// below was moved so that page-handling info is updated in Q
+			// file to correspond with page that was sent.
+		    notifyPageSent(tif, ppm == PPH_SKIP ? PAGE_SKIP : pt);// update server
 		    ntrys = 0;
 		    if (morePages) {
 			if (ppr == PPR_PIP) {
@@ -559,9 +561,9 @@ Class2Modem::sendRTC(Class2Params params)
 	{ 0x00,0x18,0x00,0x03,0x60,0x00,0x0C,0x80,0x01,0x30 };
     protoTrace("SEND %s RTC", params.is2D() ? "2D" : "1D");
     if (params.is2D())
-	return putModemDLEData(RTC2D, sizeof (RTC2D), rtcRev, getDataTimeout());
+	return putModemDLEData(RTC2D, sizeof (RTC2D), rtcRev, getDataTimeout(), false);
     else
-	return putModemDLEData(RTC1D, sizeof (RTC1D), rtcRev, getDataTimeout());
+	return putModemDLEData(RTC1D, sizeof (RTC1D), rtcRev, getDataTimeout(), false);
 }
 
 /*

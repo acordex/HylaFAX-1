@@ -355,7 +355,7 @@ void Dispatcher::instance(Dispatcher* d) { _instance = d; }
 
 IOHandler* Dispatcher::handler(int fd, DispatcherMask mask) const {
     if ((unsigned) fd >= _max_fds) {
-	abort();
+		return NULL; // abort();
     }
     IOHandler* cur = NULL;
     if (mask == ReadMask) {
@@ -365,28 +365,27 @@ IOHandler* Dispatcher::handler(int fd, DispatcherMask mask) const {
     } else if (mask == ExceptMask) {
 	cur = _etable[fd];
     } else {
-	abort();
+		return NULL; // abort();
     }
     return cur;
 }
 
 void Dispatcher::link(int fd, DispatcherMask mask, IOHandler* handler) {
     if ((unsigned) fd >= _max_fds) {
-	abort();
+		return; // abort();
     }
     attach(fd, mask, handler);
 }
 
 void Dispatcher::unlink(int fd) {
     if ((unsigned) fd >= _max_fds) {
-	abort();
+		return; // abort();
     }
     detach(fd);
 }
 
 void Dispatcher::attach(int fd, DispatcherMask mask, IOHandler* handler) {
-    if (fd < 0)
-	return;
+    if (fd < 0 || fd >= _max_fds) return;
 
     if (mask == ReadMask) {
         FD_SET(fd, &_rmask);
@@ -398,7 +397,7 @@ void Dispatcher::attach(int fd, DispatcherMask mask, IOHandler* handler) {
         FD_SET(fd, &_emask);
         _etable[fd] = handler;
     } else {
-        abort();
+        return; // abort();
     }
     if (_nfds < (unsigned)fd+1) {
 	_nfds = fd+1;
@@ -406,6 +405,7 @@ void Dispatcher::attach(int fd, DispatcherMask mask, IOHandler* handler) {
 }
 
 void Dispatcher::detach(int fd) {
+    if (fd < 0 || fd >= _max_fds) return;
     FD_CLR(fd, &_rmask);
     _rtable[fd] = NULL;
     FD_CLR(fd, &_wmask);
@@ -553,6 +553,7 @@ int Dispatcher::waitFor(
     fd_set& rmaskret, fd_set& wmaskret, fd_set& emaskret, timeval* howlong
 ) {
     int nfound = 0;
+    timeval cqhowlong;
 #if defined(SA_NOCLDSTOP)		// POSIX
     static struct sigaction sa, osa;
 #elif defined(SV_INTERRUPT)		// BSD-style
@@ -562,6 +563,13 @@ int Dispatcher::waitFor(
 #endif
 
     if (!_cqueue->isEmpty()) {
+    	/* time out every 60 seconds to check, to avoid race condition of
+    	 * child death */
+    	if (howlong == NULL) {
+    		howlong = &cqhowlong;
+     		howlong->tv_sec = 60;
+    		howlong->tv_usec = 0;
+    		}
 #if defined(SA_NOCLDSTOP)		// POSIX
 	sa.sa_handler = fxSIGACTIONHANDLER(&Dispatcher::sigCLD);
 	sa.sa_flags = SA_INTERRUPT;
@@ -586,7 +594,7 @@ int Dispatcher::waitFor(
 	    wmaskret = _wmask;
 	    emaskret = _emask;
 	    howlong = calculateTimeout(howlong);
-
+		if (_cqueue->isReady()) break;
 #if CONFIG_BADSELECTPROTO
 	    nfound = select(_nfds,
 		(int*) &rmaskret, (int*) &wmaskret, (int*) &emaskret, howlong);

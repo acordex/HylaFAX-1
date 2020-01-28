@@ -106,6 +106,8 @@ private:
 #define	FS_MFMTPEND	0x0020	// modem status format string pending
 #define	FS_FFMTPEND	0x0040	// file status format string pending
     fxStr	userName;	// sender's account name
+    fxStr	aliasName;	// alias account name to connect to server
+    fxStr	password;	// password to login to server
     fxStr	senderName;	// sender's full name (if available)
     FILE*	fdIn;		// control stream input handle
     FILE*	fdOut;		// control stream output handle
@@ -199,6 +201,7 @@ public:
     bool login(const char* user, fxStr& emsg);
     bool admin(const char* pass, fxStr& emsg);
     virtual const char* getPasswd(const char* prompt);
+    void setUser(char *username);
     bool isLoggedIn(void) const;
     void setCtrlFds(int in, int out);
     FILE* getCtrlFd(void) const;

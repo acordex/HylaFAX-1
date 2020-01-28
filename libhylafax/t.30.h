@@ -63,7 +63,7 @@
 #define	TCF_DURATION	1500		// 1.5 seconds
 
 // this is our defined NSF manufacturer code
-#define HYLAFAX_NSF	"\xB5\x00\xAA"
+#define HYLAFAX_NSF	"\265\000\252"
 
 /*
  * Facsimile control field (FCF) values

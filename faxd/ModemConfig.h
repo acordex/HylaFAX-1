@@ -221,6 +221,8 @@ public:
     bool	class2UseHex;		// parse capabilities strings as hex
     bool	class2HexNSF;		// parse nsf strings as hex
     bool	class2UseLineCount;	// use the firmware decoder's line count
+    fxStr	defCapabilities;	// Default class 2 capabilities
+    fxStr	sendOnly;			// Send only mode = "yes"
 
     FlowControl	flowControl;		// DTE-DCE flow control method
     BaudRate	maxRate;		// max DTE-DCE rate to try

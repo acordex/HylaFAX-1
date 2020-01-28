@@ -33,6 +33,7 @@
 class Timeout {
 private:
     static bool timerExpired;
+    static bool timerPending;
     static void sigAlarm(int);
 protected:
     virtual void traceTimer(const char* fmt ...);
@@ -43,6 +44,7 @@ public:
     void startTimeout(long ms);
     void stopTimeout();
 
+    bool timeoutPending() const		{ return Timeout::timerPending; }
     bool wasTimeout() const		{ return Timeout::timerExpired; }
 };
 #endif /* _Timeout_ */

@@ -34,6 +34,7 @@
 #include "FaxRequest.h"
 
 class FaxAcctInfo;
+struct FaxItem;
 
 fxDECLARE_ObjArray(FaxRecvInfoArray, FaxRecvInfo)
 
@@ -60,6 +61,7 @@ private:
     time_t	pageTransferTime;	// transfer time for last page
     u_int	npages;			// # pages sent/received
     fxStr	batchid;		// Batch ID, for session logs
+	FaxItem *curFReq;	// current sub-request, used by notify page to update
 
     friend class FaxModem;
 

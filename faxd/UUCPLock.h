@@ -45,6 +45,7 @@ private:
 
     bool	create();		// create lock file
     bool	isNewer(time_t age);	// is lock file newer than age
+    bool	isNewerThanBoot();		// is lock file newer than boot time
     bool	ownerExists(int fd);	// does owning process exist
 protected:
     UUCPLock(const fxStr& pathname, mode_t mode);

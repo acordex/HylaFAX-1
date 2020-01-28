@@ -531,14 +531,14 @@ bool
 Class1Modem::sendClass1Data(const u_char* data, u_int cc,
     const u_char* bitrev, bool eod, long ms)
 {
-    bool ok = putModemDLEData(data, cc, bitrev, ms, conf.doPhaseCDebug);
-    if (eod || abortRequested()) {
+    bool ok = putModemDLEData(data, cc, bitrev, ms, eod, conf.doPhaseCDebug);
+/*    if (eod || abortRequested()) {
 	u_char buf[2];
 	buf[0] = DLE;
 	buf[1] = ETX;
 	ok = putModemData(buf, 2);
 	return (ok && !abortRequested());
-    } else
+    } else */
 	return (ok);
 }
 
@@ -552,6 +552,9 @@ Class1Modem::abortReceive()
     if (useV34) return;			// nothing to do in V.34
     bool b = wasTimeout();
     char c = CAN;			// anything other than DC1/DC3
+    startTimeout(10 * 1000); // eliminate previous timeout
+   	stopTimeout("");
+	protoTrace("Abort Recv, timeout %d, now %d", b, wasTimeout());
     putModem(&c, 1, 1);
     /*
      * If the modem handles abort properly, then just
@@ -1282,6 +1285,7 @@ Class1Modem::sendFrame(u_char fcf, const u_char* code, const fxStr& nsf, bool la
     frame.put(lastFrame ? 0xc8 : 0xc0);
     frame.put(fcf);
     frame.put(code, 3);		// should be in LSBMSB already
+    protoTrace("NSF <%X %X %X>", code[0], code[1], code[2]);
     frame.put((const u_char*)(const char*)nsf, nsf.length());
     return (sendRawFrame(frame));
 }
@@ -1399,6 +1403,8 @@ Class1Modem::transmitData(int br, u_char* data, u_int cc,
  * where the other end is likely to be able to receive
  * it, we can transmit CRP to get the other end to
  * retransmit the frame. 
+ *
+ * CB - Note 'wastTimeout()' only true on return IF got a connection and then timed out
  */
 bool
 Class1Modem::recvFrame(HDLCFrame& frame, u_char dir, long ms, bool readPending, bool docrp, bool usehooksensitivity)
@@ -1408,6 +1414,8 @@ Class1Modem::recvFrame(HDLCFrame& frame, u_char dir, long ms, bool readPending, 
     u_int onhooks = 0;
     gotCONNECT = true;
     time_t start = Sys::now();
+    bool crpOnTimeOut = (dir == FCF_SNDR && readPending && docrp) ? true : false;
+    
     if (useV34) {
 	do {
 	    if (crpcnt) traceFCF(dir == FCF_SNDR ? "SEND send" : "RECV send", FCF_CRP);
@@ -1503,7 +1511,7 @@ Class1Modem::recvFrame(HDLCFrame& frame, u_char dir, long ms, bool readPending, 
 	     * So we simply repeat AT+FRH=3 in that case.
 	     */
 	} while ( ((u_int) Sys::now()-start < howmany(conf.t1Timer, 1000) )
-		    && !gotframe && !wasTimeout()
+		    && !gotframe && (!wasTimeout() || crpOnTimeOut)
 		    && ( (conf.class1HasRHConnectBug && !frame.getLength() && lastResponse == AT_NOCARRIER && rhcnt++ < 30)
 		         || (docrp && crpcnt++ < 3 && switchingPause(eresult, 3) && transmitFrame(dir|FCF_CRP) )
 		    ));	/* triple switchingPause to avoid sending CRP during TCF */
@@ -1683,11 +1691,21 @@ Class1Modem::class1Query(const fxStr& queryCmd, Class1Cap caps[])
     if (queryCmd[0] == '!') {
 	return (parseQuery(queryCmd.tail(queryCmd.length()-1), caps));
     }
-    if (atCmd(queryCmd, AT_NOTHING) && atResponse(response) == AT_OTHER) {
-	sync(5000);
-	return (parseQuery(response, caps));
-    }
-    return (false);
+    int tries = 0;
+    while (++tries < 3) { // retry a few tiles
+    	if (atCmd(queryCmd, AT_NOTHING)) {
+    		ATResponse r = atResponse(response, 3000);
+			if (r == AT_OK || r == AT_RING)	// spurious OK or RING wait again
+				r = atResponse(response, 500);
+    	
+    	 	if (r == AT_OTHER) {
+				sync(5000);
+				if (parseQuery(response, caps))
+					return(true);
+			}
+		}
+	}
+     return (false);
 }
 
 /*

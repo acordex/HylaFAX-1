@@ -46,6 +46,7 @@
 #include "REArray.h"
 #include "BoolArray.h"
 #include "config.h"
+#include "FaxTrace.h"
 
 /*
  * HylaFAX Spooling and Command Agent.
@@ -109,6 +110,11 @@ faxGettyApp::open()
         , (const char*) getModemDevice()
         , HYLAFAX_VERSION
     );
+ // Adding this improves the logging during setup
+    if (ModemServer::getSessionTracing() & FAXTRACE_PROTOCOL) {
+		fxStr numberStr = (const char*)"(Unknown yet)";
+    	beginSession(numberStr);
+    	}
     faxApp::open();
     FaxServer::open();
 }
@@ -457,7 +463,6 @@ faxGettyApp::answerPhone(AnswerType atype, CallType ctype, const CallID& callid,
 	    answerRotor = (answerRotor+1) % answerRotorSize;
     }
     sendModemStatus("I");
-    endSession();
 
     ai.status = eresult.string();
     ai.duration = Sys::now() - ai.start;
@@ -468,6 +473,7 @@ faxGettyApp::answerPhone(AnswerType atype, CallType ctype, const CallID& callid,
 
 
     answerCleanup();
+    endSession(); 		// CB - moved so we see the hang-up
 }
 
 /*
@@ -777,6 +783,7 @@ faxGettyApp::notifyModemReady()
 void
 faxGettyApp::notifyModemWedged()
 {
+	setServerStatus("Configuration failed"); // exact message checked in ModemServer.c, don't change
     if (!sendModemStatus("W"))
 	logError("MODEM %s appears to be wedged",
 	    (const char*) getModemDevice());
@@ -854,6 +861,7 @@ faxGettyApp::notifyRecvDone(FaxRecvInfo& ri)
 	| quote |   getModemDeviceID()	| enquote
 	| quote |            ri.commid	| enquote
 	| quote |            ri.reason	| enquote
+	| quote |            ri.sender	| enquote
 	| callid_formatted);
     traceServer("RECV FAX: %s", (const char*) cmd);
     setProcessPriority(BASE);			// lower priority

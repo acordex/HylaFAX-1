@@ -138,6 +138,13 @@ ClassModem::dial(const char* number, Status& eresult)
     fxStr buf = fxStr::format((const char*) conf.dialCmd, number);
     eresult.clear();
     CallStatus cs = (atCmd(buf, AT_NOTHING) ? dialResponse(eresult) : FAILURE);
+    /* solve problem of spurious no dial tones when previous hang-up does not clear phone line */
+    if (cs == NODIALTONE) {
+    	pause(10 * 1000);
+    	cs = (atCmd(buf, AT_NOTHING) ? dialResponse(eresult) : FAILURE);
+    	// seem to get spurious errors when the problem is really dialtone
+    	if (cs == ERROR) cs = NODIALTONE;
+    	}
     if (cs != OK && eresult.value() == 0) {
         eresult = callStatus[cs];
     }
@@ -484,24 +491,50 @@ bool ClassModem::didBlockEnd()        { return server.didBlockEnd(); }
 void ClassModem::resetBlock()         { server.resetBlock(); }
 
 bool
-ClassModem::putModemDLEData(const u_char* data, u_int cc, const u_char* bitrev, long ms, bool doquery)
+ClassModem::putModemDLEData(const u_char* data, u_int cc, const u_char* bitrev, long ms, bool eod, bool doquery)
 {
-    u_char dlebuf[2*1024];
+    u_char dlebuf[2*1024 + 2];
+    bool localAbort = false;
+    
     while (cc > 0) {
-	if (wasTimeout() || abortRequested())
+	if (wasTimeout()) {
+   		server.traceStatus(FAXTRACE_MODEMCOM, "TIMEOUT Flushing I/O");
+		server.modemFlushOutput();
 	    return (false);
+	    }
+	
+	if (abortRequested() && (!eod || cc > 32)) {
+   		server.traceStatus(FAXTRACE_MODEMCOM, "ABORT REQUESTED: Flushing I/O");
+		server.modemFlushOutput();
+		localAbort = true;
+		cc = 0;
+		eod = true;
+		}
 	/*
 	 * Copy to temp buffer, doubling DLE's.
 	 */
 	u_int i, j;
-	u_int n = fxmin((size_t) cc, sizeof (dlebuf)/2);
+	u_int n = fxmin((size_t) cc, (sizeof (dlebuf) - 2)/2);
 	for (i = 0, j = 0; i < n; i++, j++) {
 	    dlebuf[j] = bitrev[data[i]];
 	    if (dlebuf[j] == DLE)
 		dlebuf[++j] = DLE;
 	}
-	if (!putModem(dlebuf, j, ms))
+	if (n == cc && eod) {
+		dlebuf[j++]  = DLE;
+		dlebuf[j++]  = ETX;
+		}
+	if (!putModem(dlebuf, j, ms)) {
+		if (abortRequested()) {
+   			server.traceStatus(FAXTRACE_MODEMCOM, "ABORT REQUESTED: Flushing I/O");
+			server.modemFlushOutput();
+		    }
 	    return (false);
+		}
+    if (localAbort) {
+   		server.traceStatus(FAXTRACE_MODEMCOM, "ABORT REQUESTED");
+	    return (false);
+    	}
 	data += n;
 	cc -= n;
 	/*
@@ -546,8 +579,17 @@ ClassModem::putModemLine(const char* cp, long ms)
 {
     u_int cc = strlen(cp);
     server.traceStatus(FAXTRACE_MODEMCOM, "<-- [%u:%s\\r]", cc+1, cp);
-    static const char CR = '\r';
-    return (server.putModem1(cp, cc, ms) && server.putModem1(&CR, 1, ms));
+    if (cc < 100) {
+		char buf[100];
+	
+		strcpy(buf, cp);
+		buf[cc] = '\r';
+		return server.putModem1(buf, cc + 1, ms);
+		}
+    else {
+   		static const char CR = '\r';
+    	return (server.putModem1(cp, cc, ms) && server.putModem1(&CR, 1, ms));
+	}
 }
 
 void ClassModem::startTimeout(long ms) { server.startTimeout(ms); }
@@ -1190,16 +1232,29 @@ bool
 ClassModem::atQuery(const char* what, fxStr& v, long ms)
 {
     ATResponse r = AT_ERROR;
+    bool gotRing = false;
+    
+    if (!ms) ms = 10 * 1000;
     if (atCmd(what, AT_NOTHING)) {
 	v.resize(0);
-	while ((r = atResponse(rbuf, ms)) != AT_OK) {
+    startTimeout(ms);
+	while ((r = atResponse(rbuf, 0)) != AT_OK) {
 	    if (r == AT_ERROR || r == AT_TIMEOUT || r == AT_EMPTYLINE)
 		break;
+		if (r == AT_RING) {
+			gotRing = true;
+			continue;	// retry on rings
+			}
 	    if (v.length())
 		v.append('\n');
 	    v.append(rbuf);
 	}
+    stopTimeout("Querying modem");
     }
+    // if we got a ring, then caller ID info will have messed up the response as this will
+    // have come in with the ring as well, so just issue the query again to get the correct response
+    if (gotRing)	// try again if we got a ring
+    	return atQuery(what, v, ms);
     return (r == AT_OK);
 }
 
@@ -1210,10 +1265,12 @@ bool
 ClassModem::atQuery(const char* what, u_int& v, long ms)
 {
     char response[1024];
-    if (atCmd(what, AT_NOTHING) && atResponse(response) == AT_OTHER) {
+	ATResponse r;
+    if (atCmd(what, AT_NOTHING) && (r = atResponse(response)) == AT_OTHER) {
 	sync(ms);
 	return parseRange(response, v);
     }
+    if (r == AT_RING) return atQuery(what, v, ms); // try again if we got a ring
     return (false);
 }
 
@@ -1393,7 +1450,15 @@ ClassModem::setSpeakerVolume(SpeakerVolume l)
 void
 ClassModem::hangup()
 {
-    atCmd(conf.onHookCmd, AT_OK, 5000);
+    if (!atCmd(conf.onHookCmd, AT_OK, 5000)) {
+		/* CB 2/17/04 Can see AT_NOCARRIER response if aborted during dialing */
+    	if (lastResponse == AT_NOCARRIER) {
+    		if (atCmd(conf.onHookCmd, AT_OK, 5000))
+    			return;
+    		}
+    	protoTrace("HANGUP failed - reopen");
+        server.reopenDevice();
+        }
 }
 
 bool
@@ -1461,7 +1526,7 @@ ClassModem::waitForRings(u_short rings, CallType& type, CallID& callid)
 			 */
 			conf.parseCallID(rbuf, callid);
 		    }
-		    if (r == AT_OK) cmddone = true;
+		    if (r == AT_OK || r == AT_RING) cmddone = true;
 		    else if (r == AT_VCON) cmddone = true;		// VCON for modems that require ATA
 		} while (!cmddone && (Sys::now()-ringstart < 3));
 		for (u_int j = 0 ; j < conf.idConfig.length(); j++) {
@@ -1539,4 +1604,123 @@ CallType ClassModem::findCallType(int vec[])
     }
     return CALLTYPE_UNKNOWN;
 }
+
+#if 0
+int
+ClassModem::waitForHeartBeat(u_int *ring, CallType& type, CallerID& cinfo, fxStr& emsg)
+{
+	int respVal = -1;
+	int respCode;
+	int rval;
+	char msgBuf[200];
+	
+	*ring = 0;
+	if (conf.heartBeatCmd.length() == 0)
+		return(0);
+	startTimeout(500);
+	atCmd(conf.heartBeatCmd, AT_NOTHING, 0);
+	while (true) {
+		switch ((respCode = atResponse(rbuf, 0))) {
+		    case AT_OTHER:
+		    	/* if we have an expected response, check it */
+			 	if (conf.heartBeatResp.length() != 0 && streq(conf.heartBeatResp, rbuf)) {
+			 		respVal = 0;
+					continue; // try again
+					}
+		    	/* if we have an lost configuration response, check it */
+			 	else if (conf.heartBeatLostCfg.length() != 0 && streq(conf.heartBeatLostCfg, rbuf)) {
+			 		respVal = 1;
+					continue; // try again
+					}
+	/*	    	if (isdigit(cp[0])) {
+		    		respVal = 0;
+		    		do {
+		    			respVal = respVal * 10  + (cp[0] - '0');
+		    			++cp;
+		    			} while (isdigit(cp[0]));
+		    		continue; // wait for OK response
+		    		} */
+			 	else if (streq(conf.ringData, rbuf)) 		// check distinctive ring
+			   		type = CALLTYPE_DATA;
+				else if (streq(conf.ringFax, rbuf))
+			    	type = CALLTYPE_FAX;
+				else if (streq(conf.ringVoice, rbuf))
+			    	type = CALLTYPE_VOICE;
+				else {
+			   		if (strneq(rbuf, "RING ", 5))	// extended RING
+						*ring = 1;
+			   		if (*ring)
+			   			conf.parseCID(rbuf, cinfo);
+			   		else {
+			   			respVal = 2;	// unknown response
+			   			sprintf(msgBuf, "Unknown response to modem check command (%.20s)", rbuf);
+						}
+			    	continue;
+					}
+			/* fall thru... */
+		    case AT_RING:			// normal ring
+				*ring = 1;
+				continue; // try again
+			case AT_OK:			// expected response
+			 	if (conf.heartBeatResp.length() == 0)
+			 		respVal = 0;
+				if (respVal == -1 || respVal == 2) { // someone else listening to device so we lost our response ?
+					if (*ring) {
+						rval = 0;  // we have a ring, pretend its OK
+						break;
+						}
+					if (respVal == 2)
+		    			emsg = msgBuf;
+					else emsg = "Missing response to modem check command, followed by OK, other process could be using modem";
+					rval = -1; // missing or invalid response
+					break;
+					}
+				if (respVal == 1) { // even in the case of a ring we want to reconfig before we answer if we lost config
+					*ring = 0;
+					emsg = "Modem lost configuration (power loss?)";
+					}
+				rval = respVal;
+				break;
+		    case AT_TIMEOUT:
+		    	if (!*ring || respVal == 1) {  // even in the case of a ring we want to reconfig before we answer if we lost config
+		    		if (respVal == -1)
+						emsg = "No response to modem check command";
+					if (respVal == 1)
+						emsg = "Modem lost configuration (power loss?)";
+					if (respVal == 0)
+						emsg = "Missing OK response to modem check command, other process could be using modem";
+		    		rval = -2; // TIMEOUT
+		    		break;
+		    		}
+		    	rval = 0;  // we have a ring, pretend its OK
+		    	break;
+		    case AT_EMPTYLINE:	
+		   		continue; // try again
+		   	default:
+		   	case AT_ERROR:
+			 	if (conf.heartBeatLostCfg.length() != 0 && streq(conf.heartBeatLostCfg, rbuf)) {
+			 		respVal = 1;
+			 		*ring = 0;
+					emsg = "Modem lost configuration (power loss?)";
+					break;
+					}
+		    	if (*ring) {
+		    		rval = 0; // we have a ring, pretend its OK
+		    		break;
+		    		}
+		    	if (respCode == AT_ERROR)
+		    		emsg = "Error response to modem check command";
+		    	else {
+		    		sprintf(msgBuf, "Unknown response to modem check command (%.20s)", rbuf);
+		    		emsg = msgBuf;
+		    		}
+		   		rval = -3;
+		   		break;
+		    }
+		break;  
+	    }
+	stopTimeout("checking modem");
+    return (rval);
+}
+#endif
 
