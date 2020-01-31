@@ -89,6 +89,7 @@ private:
     bool	inputBuffered;		// whether or not modem input is buffered
     u_char	rcvBuf[1024];		// receive buffering
 	bool	modemWedged;		// true if modem wedged
+	int		consecutiveErrorOrZeroReads;	// Acordex CB 1/31.20 number of consecutive read errors or zero length reads
 
     friend class ClassModem;
 

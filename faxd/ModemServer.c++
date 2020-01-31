@@ -1551,8 +1551,11 @@ ModemServer::getModemLine(char rbuf[], u_int bufSize, long ms)
     rbuf[cc] = '\0';
     if (ms) stopTimeout("reading line from modem");
     timeout = timer.wasTimeout();
-    if (!timeout)
-		traceStatus(FAXTRACE_MODEMCOM, "--> [%d:%s]", cc, rbuf);
+    if (!timeout) {
+    	// Acordex CB 1/31/20 avoid filling log with --> [0:] if t38modem has died and we are getting no data.
+    	if (consecutiveErrorOrZeroReads < 2 || cc != 0)
+			traceStatus(FAXTRACE_MODEMCOM, "--> [%d:%d:%s]", cc, consecutiveErrorOrZeroReads, rbuf);
+	}
 	else traceStatus(FAXTRACE_MODEMCOM, "TIMEOUT: %d ms [%d:%s]", ms, cc, rbuf);
     return (cc);
 }
@@ -1586,14 +1589,25 @@ ModemServer::getModemChar(long ms, bool isquery)
 	    if (rcvCC < 0) {
 			if (errno != EINTR) {
 		    if (!isquery || errno != EAGAIN)
-				traceStatus(FAXTRACE_MODEMCOM,
-			   		"MODEM READ ERROR: errno %u", errno);
+	    		if (++consecutiveErrorOrZeroReads == 1) {
+    				// Acordex CB 1/31/20 avoid filling log with 'MODEM READ ERROR:' if t38modem has died and we are getting no data.
+					traceStatus(FAXTRACE_MODEMCOM,
+			   			"MODEM READ ERROR: errno %u", errno);
+			   	}
 	    	}
 		   	else traceStatus(FAXTRACE_MODEMCOM, "TIMEOUT: %d ms (during modem read)", ms);
-	    } else traceStatus(FAXTRACE_MODEMCOM, "EOF: zero read");
+	    } else {
+    		// Acordex CB 1/31/20 avoid filling log with 'EOF: zero read' if t38modem has died and we are getting no data.
+	    	if (++consecutiveErrorOrZeroReads == 1) {
+	    		traceStatus(FAXTRACE_MODEMCOM, "EOF: zero read");
+	    	}
+	    }
 	    return (EOF);
-	} else
+	} else {
+		// Acordex CB 1/31/20, we got data so clear flag the hides log messages
+		consecutiveErrorOrZeroReads = 0;
 	    traceModemIO("-->", rcvBuf, rcvCC);
+	}
 	rcvNext = 0;
     }
     return (rcvBuf[rcvNext++]);

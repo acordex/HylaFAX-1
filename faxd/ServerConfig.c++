@@ -107,7 +107,8 @@ ServerConfig::S_numbertag ServerConfig::numbers[] = {
 { "polllockwait",	&ServerConfig::pollLockWait,	30 },
 { "maxrecvpages",	&ServerConfig::maxRecvPages,	(u_int) -1 },
 { "maxbadcalls",	&ServerConfig::maxConsecutiveBadCalls, 25 },
-{ "maxsetupattempts",	&ServerConfig::maxSetupAttempts, 2 },
+// Acordex 2 -> 2000 so that if t38 is down we don't get an enormous number of log files
+{ "maxsetupattempts",	&ServerConfig::maxSetupAttempts, 2000 },
 };
 ServerConfig::S_filemodetag ServerConfig::filemodes[] = {
 { "recvfilemode",	&ServerConfig::recvFileMode,	0600 },
