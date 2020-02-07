@@ -1554,7 +1554,7 @@ ModemServer::getModemLine(char rbuf[], u_int bufSize, long ms)
     if (!timeout) {
     	// Acordex CB 1/31/20 avoid filling log with --> [0:] if t38modem has died and we are getting no data.
     	if (consecutiveErrorOrZeroReads < 2 || cc != 0)
-			traceStatus(FAXTRACE_MODEMCOM, "--> [%d:%d:%s]", cc, consecutiveErrorOrZeroReads, rbuf);
+			traceStatus(FAXTRACE_MODEMCOM, "--> [%d:%s]", cc, rbuf);
 	}
 	else traceStatus(FAXTRACE_MODEMCOM, "TIMEOUT: %d ms [%d:%s]", ms, cc, rbuf);
     return (cc);
