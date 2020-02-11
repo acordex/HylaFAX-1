@@ -1124,8 +1124,10 @@ EOF
 
 if onServer; then
     test -x $PATH_GETTY		|| warnAppMisConfigured $PATH_GETTY
-    test -x $PATH_VGETTY	|| warnAppMisConfigured $PATH_VGETTY
-    test -x $PATH_EGETTY	|| warnAppMisConfigured $PATH_EGETTY
+# Acordex removed, these programs do not exist on unix, and are not
+# used by our implementation of Hylafax
+#    test -x $PATH_VGETTY	|| warnAppMisConfigured $PATH_VGETTY
+#    test -x $PATH_EGETTY	|| warnAppMisConfigured $PATH_EGETTY
 
     for i in $CAT $CHGRP $CHMOD $CHOWN $CP $ECHO $GREP $LN $MKFIFO $MV \
 	$RMCMD $SED $SENDMAIL; do
@@ -2559,19 +2561,21 @@ EOF
     fi
 
     DEVS="`cd $DIR_SPOOL/etc; echo config.*`"
-    if [ -z "$DEVS" ] || [ "$DEVS" = 'config.*' ]; then
-	cat<<EOF
-
-You do not appear to have any modems configured for use.  Modems are
-configured for use with HylaFAX with the faxaddmodem(@MANNUM1_8@) command.
-EOF
-	prompt "Do you want to run faxaddmodem to configure a modem [yes]?"; read x
-	while isOK "$x"; do
-	     $DIR_SBIN/faxaddmodem
-	     prompt "Do you want to run faxaddmodem to configure another modem [yes]?"; read x
-	done
-	DEVS="`cd $DIR_SPOOL/etc; echo config.*`"
-    fi
+# Acordex CB 2/7/20 removed this as we do not add modems during setup, but
+# use faxin to accomplish this
+#    if [ -z "$DEVS" ] || [ "$DEVS" = 'config.*' ]; then
+#	cat<<EOF
+#
+#You do not appear to have any modems configured for use.  Modems are
+#configured for use with HylaFAX with the faxaddmodem(@MANNUM1_8@) command.
+#EOF
+#	prompt "Do you want to run faxaddmodem to configure a modem [yes]?"; read x
+#	while isOK "$x"; do
+#	     $DIR_SBIN/faxaddmodem
+#	     prompt "Do you want to run faxaddmodem to configure another modem [yes]?"; read x
+#	done
+#	DEVS="`cd $DIR_SPOOL/etc; echo config.*`"
+#    fi
 
     if [ -n "$DEVS" ] && [ "$DEVS" != 'config.*' ]; then
 	FAXGETTY="`findproc faxgetty`"
