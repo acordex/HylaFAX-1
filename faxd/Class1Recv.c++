@@ -725,6 +725,8 @@ Class1Modem::recvPage(TIFF* tif, u_int& ppm, Status& eresult, const fxStr& id)
 		ppmrcvd = recvFrame(frame, FCF_RCVR, timer);
 	    } while (!ppmrcvd && gotCONNECT && wasTimeout() && !gotEOT && ++recvFrameCount < 3);
 	    if (ppmrcvd) lastPPM = frame.getFCF();
+	    /* CB Acordex 5/15/2020 - prevent saving of bad page if we receive no page end message */
+	    else if (!pageGood) recvResetPage(tif);
 	}
 	/*
 	 * Do command received logic.
@@ -995,6 +997,8 @@ Class1Modem::recvPage(TIFF* tif, u_int& ppm, Status& eresult, const fxStr& id)
 //		break;
 	    case FCF_MCF:
 	    case FCF_CFR:
+	    /* CB Acordex 5/15/2020 - prevent saving of bad page */
+	   	if (!pageGood) recvResetPage(tif);
 		/* It's probably just our own echo. */
 		messageReceived = false;
 		signalRcvd = 0;
@@ -1003,6 +1007,8 @@ Class1Modem::recvPage(TIFF* tif, u_int& ppm, Status& eresult, const fxStr& id)
 		protoTrace("RECV recv DCN");
 		eresult = Status(108, "COMREC received DCN (sender abort)");
 		recvdDCN = true;
+	    /* CB Acordex 5/15/2020 - prevent saving of bad page */
+	   	if (!pageGood) recvResetPage(tif);
 		if (prevPage && conf.saveUnconfirmedPages && getRecvEOLCount()) {	// only if there was data
 		    TIFFWriteDirectory(tif);
 		    protoTrace("RECV keeping unconfirmed page");
