@@ -30,7 +30,7 @@
 
 #include <sys/param.h>
 #include <sys/types.h>
-#include <sys/sysctl.h>
+#include <linux/sysctl.h>
 #include <errno.h>
 #ifdef HAS_MKDEV
 extern "C" {
